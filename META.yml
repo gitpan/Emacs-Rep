@@ -1,0 +1,30 @@
+---
+abstract: 'find & replace backend for rep.pl and in-turn rep.el'
+author:
+  - 'Joseph Brenner <doom@kzsu.stanford.edu>'
+build_requires:
+  Data::Dumper::Perltidy: 0
+  FindBin: 0
+  Test::More: 0
+  lib: 0
+configure_requires:
+  Module::Build: 0.36
+generated_by: 'Module::Build version 0.3607'
+license: perl
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: Emacs-Rep
+provides:
+  Emacs::Rep:
+    file: lib/Emacs/Rep.pm
+    version: 0.01
+requires:
+  Carp: 0
+  Data::Dumper: 0
+  Text::Balanced: 0
+  strict: 0
+  warnings: 0
+resources:
+  license: http://dev.perl.org/licenses/
+version: 0.01

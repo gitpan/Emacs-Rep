@@ -8,9 +8,11 @@ WriteMakefile
                            'Carp' => 0,
                            'Data::Dumper' => 0,
                            'Data::Dumper::Perltidy' => 0,
+                           'Exporter' => 0,
                            'FindBin' => 0,
+                           'PPI' => 0,
                            'Test::More' => 0,
-                           'Text::Balanced' => 0,
+                           'Test::Trap' => 0,
                            'lib' => 0,
                            'strict' => 0,
                            'warnings' => 0

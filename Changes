@@ -2,6 +2,15 @@ Revision history for Emacs-Rep
 
 0.01    Sun May 30 12:23:55 2010
         First version.
-        Limitation: substitutions limited to single-line strings
-        (Every s/// must be on one line.)
+        Limitation: all of perl's substitutions syntax is
+        not supported, in particular substitutions with embedded
+        semicolons may behave oddly.
+
+0.02    Sun Jun  6 17:36:22 2010
+        Using a PPI-based solution now.  The full range of perl's
+        substitution syntax is now supported.
+        Have support for multi-line substitutions.
+        Window management is more careful (no crashes
+        from the current window being too small).
+        User set-up is more flexible (easy to use an alternative key prefix).
 

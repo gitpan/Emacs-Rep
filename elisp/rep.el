@@ -58,21 +58,18 @@
 ;;   (require 'rep)
 ;;   (rep-standard-setup)
 
-;; For setup customization alternatives to the "rep-standard-setup",
-;; see SET-UP CUSTOMIZATION below.
-
 ;; USAGE
 
-;; When editing a file you'd like to modify interactively
-;; using perl substitution commands (usually of the from
-;; s///g;), you can use "C-c.S" to open a small window suitable
-;; for entering a series of substitution commands. When you're
-;; ready, "C-c.R" will run these substitutions on the other
-;; window.
+;; When editing a file you'd like to modify you can use "C-c.S" to open a
+;; small window suitable for entering a series of perl substitution
+;; commands, typically of the form: "s/<find_pattern>/<replace_string>/g;".
+
+;; When you're ready to try them, "C-c.R" will run these substitutions on
+;; the other window.
 
 ;; The usual font-lock syntax coloring will be temporarily
-;; shut-off, so that changed strings can be indicated with
-;; colors that correspond to the particular s///g command that
+;; shut-off, so that modified strings can be indicated easily,
+;; with colors correspond to the particular s///g command that
 ;; made the change.
 
 ;; In the buffer for the modified file a "rep-modified-mode" minor
@@ -81,76 +78,27 @@
 
 ;;    TAB       rep-modified-skip-to-next-change
 ;;              You can easily skip to the next change with the tab key.
-
-;;    "C-c.w"   rep-modified-what-was-changed-here-verbose
-;;              Tells you want the changed string at the cursor
-;;              was before it was modified.
+;;              The message in the status bar tells you what it was
+;;              before the change.
 
 ;;    "C-c.u"   rep-modified-undo-change-here
 ;;              Does an undo of an individual change, changing it back
 ;;              to the string indicated with "C-c.w".
-;;              Note: there's no relation between this and the usual emacs
-;;              undo mechanism, they operate independantly.
 
 ;;    "C-c.R"   rep-modified-revert-all-changes
-;;              All of the changes from a run of substitutions
-;;              can be reverted all at once, using this command.
+;;              Reverts all of the changes at once.
 ;;              If there have been multiple substitutions runs
 ;;              on the same file-buffer, repeated uses of this
 ;;              command will continue reverting the previous run.
 
 ;;     "C-c.A"  rep-modified-accept-changes
-;;              When you're convinced that the substitutions run did
+;;              When you're convinced that the substitutions did
 ;;              what you wanted, you can use this to accept the changes
 ;;              and get your normal syntax coloring back.
 
 ;;  Note that the *.rep files you create with C-c.S can be run again
 ;;  on other files.  This should simplify making similar changes to
-;;  a large number of files (though at present there are no recursive
-;;  descent features provided by this library).
-
-;;  Additionally, there's the command:
-
-;;    "C-c.x"   rep-modified-examine-properties-at-point
-;;              This is more informative than C-c.w, but less neat.
-
-
-;; SET-UP CUSTOMIZATION
-
-;; The easy way to get the standard (i.e. documented) behavior
-;; is just to use (rep-standard-setup)
-
-;; If you'd like different behavior, here are some hints:
-
-;; You can choose a different standard key prefix (other than the
-;; default "Control-c .") easily enough like so:
-
-;;   (rep-standard-setup "\C-c|")  ;; "Control-c vertical-bar"
-
-;; The standard set-up is roughly equivalent to the following
-;; (so you can start with this and edit it as you like):
-
-;;   (global-set-key "C-c.S" 'rep-open-substitutions)
-;;   (add-to-list
-;;    'auto-mode-alist
-;;    '("\\.\\(rep\\)\\'" . rep-substitutions-mode))
-;;   (define-key rep-substitutions-mode-map "\C-c.R"
-;;     'rep-substitutions-apply-to-other-window)
-;;   (rep-define-rep-modified-mode-keybindings "\C-c.")
-
-;; And that last line can be expanded still further, into
-;; something like:
-
-;;     (add-hook 'rep-modified-mode-hook
-;;           '(lambda ()
-;;              (local-set-key "%sw"  'rep-modified-what-was-changed-here-verbose)
-;;              (local-set-key "%sx"  'rep-modified-examine-properties-at-point)
-;;              (local-set-key "%su"  'rep-modified-undo-change-here)
-;;              (local-set-key "%sR"  'rep-modified-revert-all-changes)
-;;              (local-set-key "%sA"  'rep-modified-accept-changes)
-;;              (local-set-key [tab]  'rep-modified-skip-to-next-change)
-;;              (local-set-key [backtab]  'rep-modified-skip-to-prev-change)
-;;              ))
+;;  a large number of files.
 
 ;; For more information:
 
@@ -167,31 +115,31 @@
 
 (provide 'rep)
 (eval-when-compile
-  (require 'cl))
+  (require 'cl)
+  (require 'dired-aux)
+  (require 'json)
+  )
 
 
 
 ;;---------
 ;;  User Options, Variables
 
-(defvar rep-version "0.05"
- "Version number of the rep.el elisp file, which should be kept
-in sync with the rep.pl script and the Rep.pm \(Emacs::Rep\)
+(defvar rep-version "0.06"
+ "Version number of the rep.el elisp file.
+This version should match the versions of
+the rep.pl script and the Rep.pm \(Emacs::Rep\)
 perl library.")
 
-;; TODO always set to nil before shipping code
 (defvar rep-debug nil
   "Set to t to enable some debug messages.")
+;; (setq rep-debug nil)
+;; (setq rep-debug t)
 
-(defvar rep-live-dangerously nil
-  "Set to t if you like adventure.
-At the moment, all this does is to suppress the read-only-
-until-changes-accepted behavior in a modified buffer.
-If you \"live dangerously\" you can edit while reviewing
-changes, but the markup will start getting out of sync with
-the text pretty quickly.  Workaround: review and edit working
-from bottom-to-top.")
-;; (setq rep-live-dangerously nil) ;; DEBUG
+(defvar rep-trace nil
+  "Set to t to enable subroutine trace messages.")
+;; (setq rep-trace nil)
+;; (setq rep-trace t)
 
 (defcustom rep-underline-changes-color nil
   "If this is set to a color name such as \"red\" then the
@@ -239,6 +187,12 @@ The fields in each record: pass, beg, end, delta, orig,
 all integers except for orig, which is a string.")
 (make-variable-buffer-local 'rep-change-metadata)
 (put 'rep-change-metadata 'risky-local-variable t)
+
+;; TODO Document?
+;; Text properties:
+;;   rep-last-change
+;;   rep-change-stack
+
 
 ;;--------
 ;; colorized faces used to mark-up changes
@@ -292,7 +246,9 @@ all integers except for orig, which is a string.")
 (defvar rep-face-alist ()
  "Faces keyed by number (an integer to font association).
 Used by function \\[rep-lookup-markup-face].")
-;; hardcoded generation of look-up table (stupid, but simple)
+;; hardcoded look-up table (stupid, but simple)
+;; TODO (1) look into vectors... or just use an array?
+;;      (2) have rep-make-face generate.
 (setq rep-face-alist
       '(
         (00 . rep-00-face)
@@ -333,15 +289,14 @@ Used by function \\[rep-lookup-markup-face].")
 
 ;;--------
 ;; utility functions used by commands below
-
 (defun rep-lookup-markup-face (pass)
-  "Given an integer PASS, returns an appropriate face from \[[rep-face-alist]].
+  "Given an integer PASS, returns an appropriate face from \\[rep-face-alist].
 These faces are named rep-NN-face where NN is a two-digit integer.
 In the event that PASS exceeds the number of such defined faces, this
 routine will wrap around and begin reusing the low-numbered faces.
 If PASS is nil, this will return nil.
 Underlining may be turned on with `rep-underline-changes-color'."
-;;  (interactive "npick a number: ") ;; DEBUG
+  (if rep-trace (message "%s" "rep-lookup-markup-face"))
   (cond (pass
          (let ( markup-face limit index )
            (setq limit (length rep-face-alist) )
@@ -355,36 +310,12 @@ Underlining may be turned on with `rep-underline-changes-color'."
         (t
          nil)))
 
-;; Instead of this hack, could've used dired's
-;; "dired-split" which is quite close to perl's split:
-;;   (dired-split PAT STR &optional LIMIT)
-(defun rep-split-limited (delimiter line limit)
-  "Split LINE on DELIMITER into no more than LIMIT fields.
-This is something like perl's limit feature on splits.
-Using this function additional, superfluous delimiters are
-allowed in the final field.
-Example:
- (rep-split-limited \":\" \"hey:ho:lets:go:gabba:gabba:hey\" 5)
- (\"hey\" \"ho\" \"lets\" \"go\" \"gabba:gabba:hey\")
-"
-  (let* ((raw (split-string line delimiter))
-         (new-list ())
-         (i 0)
-         (i-limit (- limit 1))
-         )
-    (while (< i i-limit)
-      (push (pop raw) new-list)
-      (setq i (1+ i))
-      )
-    (push (mapconcat 'identity raw delimiter) new-list)
-    (nreverse new-list)
-    ))
-
 (defun rep-split-on-semicolon-delimited-lines ( text )
   "Splits text on line-endings with semi-colons.
 This allows for \"lines\" with embedded newlines, but any
 embedded semi-colons are expected to be escaped with a backslash.
 The escaping backslashes are removed."
+  (if rep-trace (message "%s" "rep-split-on-semicolon-delimited-lines"))
   (let* (
         ;; match a semicolon not preceeded by backwhack, at eol
         ;; captures all to 1.  Note, this eats a preceeding char that
@@ -395,7 +326,7 @@ The escaping backslashes are removed."
         (lines ())
         end
         )
-    (while (< beg fin)
+    (while (<= beg (1- fin))
       (let* (;; look for location with expected line ending...
              (loc (string-match pat text beg)) )
         (cond (loc ;; if that's found, we've found end of next record
@@ -416,6 +347,7 @@ The escaping backslashes are removed."
 (defun rep-sub-directory (file-location)
   "Given a directory, returns path to a '.rep' sub-directory.
 If the sub-directory does not exist, this will create it. "
+  (if rep-trace (message "%s" "rep-sub-directory"))
   (let* ( (dir
            (substitute-in-file-name
             (convert-standard-filename
@@ -430,8 +362,8 @@ If the sub-directory does not exist, this will create it. "
 
 (defun rep-generate-random-suffix ()
   "Generate a three character suffix, pseudo-randomly."
-;; As written, this is always 3 upper-case asci characters.
-;;  (interactive);; DEBUG
+  (if rep-trace (message "%s" "rep-generate-random-suffix"))
+  ;; As written, this is always 3 upper-case asci characters.
   (let (string)
     (random t)
     (setq string
@@ -454,26 +386,29 @@ If the sub-directory does not exist, this will create it. "
 ;;      other window once it's been modified.  This has keybindings to
 ;;      examine, undo, revert or accept the changes.
 
-(defun rep-standard-setup (&optional prefix)
-  "A consolidating routine to set-up keybindings and so on.
+(defun rep-standard-setup (&optional dont-touch-tab)
+  "Perform the standard set-up operations.
+Calling this is intended to be a single step to get useful
+keybindings and so on.
 If you agree with our ideas about set-up, you can just run this,
-if you'd rather do it yourself, then skip this: this code
-is unobtrusive by default."
+if you'd rather do it yourself, then skip this, and the rep.el
+package will use more unobtrusive defaults.
+Note: the \"standard\" behavior is what is better documented.
+If the optional DONT-TOUCH-TAB flag is set to t, tab and backtab
+bindings should be left alone."
+  (if rep-trace (message "%s" "rep-standard-setup"))
   (cond ((rep-probe-for-rep-pl)
          (message "rep.pl must be in PATH for rep.el to work.")
          ))
-  (unless prefix (setq prefix "\C-c."))
-  (rep-define-entry-key  prefix)
-  (rep-define-rep-modified-mode-keybindings prefix)
+
+  (unless dont-touch-tab
+    (rep-define-rep-modified-rebind-tab))
 
   (add-to-list
    'auto-mode-alist
    '("\\.\\(rep\\)\\'" . rep-substitutions-mode))
 
-  ;; two forms of "do-it" for the substitutions: C-x# and C-c.r
   (define-key rep-substitutions-mode-map "\C-x#"
-    'rep-substitutions-apply-to-other-window)
-  (define-key rep-substitutions-mode-map (format "%sr" prefix)
     'rep-substitutions-apply-to-other-window)
   )
 
@@ -483,6 +418,7 @@ Defaults to \"Control-c . S\".  A different prefix may be given
 as an argument, for example:
   (rep-define-entry-key \"M-o\")
 would define the key-strokes \"Alt o S\"."
+  (if rep-trace (message "%s" "rep-define-entry-key"))
 ;;  (interactive) ;; DEBUG
   (unless prefix (setq prefix "\C-c."))
   (global-set-key (format "%sS" prefix) 'rep-open-substitutions)
@@ -510,6 +446,7 @@ there.
 
 The standard prefix \\(default: \"substitutions\"\\) comes from
 this variable: `rep-default-substitutions-file-name-prefix'."
+  (if rep-trace (message "%s" "rep-open-substitutions"))
   (interactive)
   (let* ((file-location (file-name-directory (buffer-file-name)))
          (dir (or
@@ -531,6 +468,7 @@ this variable: `rep-default-substitutions-file-name-prefix'."
   "Open a new substitutions file buffer, prompting for the NAME.
 This is an alternate entry-point command, much like
 \\[rep-open-substitutions]."
+  (if rep-trace (message "%s" "rep-open-substitutions-prompt"))
   (interactive "FName of substitutions file:")
   (rep-open-substitutions-file-buffer-internal name )
   )
@@ -542,21 +480,30 @@ window without being too obnoxious about it.
 This just handles the window management and template insertion.
 Choosing the file name and location is a job for routines such as
 \\[rep-open-substitutions]."
+  (if rep-trace (message "%s" "rep-open-substitutions-file-buffer-internal"))
   (interactive)
   (let* (
-         ( hint
+         (hint
            (concat
            "# Enter s///g; lines, "
            "/e not allowed /g assumed, "
-           "C-c.r runs on other window") )
+           "C-c.r runs on other window"))
          (length-header (length hint))
-         ( substitution-template "s///g;" )
-         ( f-height (frame-height) )
-         ( w-height (window-body-height) )
-         ( number-lines 10 )
-         ( need-window-lines (round (* 1.5 number-lines)) )
-         ( expansion-limit (- f-height w-height))
-         ( current-deficit (- need-window-lines w-height ))
+         (substitution-template "s///g;" )
+         start-here
+         (hint2
+           (concat
+           "# In modififed buffer, the key prefix is 'C-c.':\n"
+           "# Skip to change: C-c.n "
+           "Undo one change: C-C.u "
+           "Accept all: C-c.A "
+           "Revert all: C-c.R "))
+         (f-height (frame-height) )
+         (w-height (window-body-height) )
+         (number-lines 10 )
+         (need-window-lines (round (* 1.5 number-lines)) )
+         (expansion-limit (- f-height w-height))
+         (current-deficit (- need-window-lines w-height ))
          )
     (cond ((> w-height need-window-lines)
            (split-window-vertically number-lines)
@@ -576,6 +523,14 @@ Choosing the file name and location is a job for routines such as
     (insert hint)
     (put-text-property 1 length-header 'read-only t)
     (insert "\n") ;; check portability?
+
+    (setq start-here (point))
+
+    (open-line 6)
+    (goto-char (point-max))
+    (insert hint2)
+
+    (goto-char start-here)
     (insert substitution-template)
     (move-beginning-of-line 1)
     (forward-char 2)
@@ -588,8 +543,38 @@ Choosing the file name and location is a job for routines such as
 Derived from cperl-mode, because we're editing substitutions
 that use perl's syntax \(and are interpreted using perl\).
 \\{rep-substitutions-mode-map}"
-  (use-local-map rep-substitutions-mode-map)
+  (use-local-map rep-substitutions-mode-map))
+
+(defcustom rep-key-prefix [(control ?c) ?.]
+  "Prefix key to use for the rep-modified-mode minor mode.
+The value of this variable is checked as part of loading rep-modififed-mode.
+After that, changing the prefix key requires manipulating keymaps."
+  ;; Note: the following "FIXME" is from footnote.el:
+  ;; FIXME: the type should be a key-sequence, but it seems Custom
+  ;; doesn't support that yet.
+  ;; :type  'string
   )
+
+(defvar rep-modified-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "w"
+      'rep-modified-what-was-changed-here-verbose)
+    (define-key map "x"
+      'rep-modified-examine-properties-at-point)
+    (define-key map "X" 'describe-text-properties)
+    (define-key map "u" 'rep-modified-undo-change-here)
+    (define-key map "R" 'rep-modified-revert-all-changes)
+    (define-key map "@" 'rep-modified-accept-changes)
+    (define-key map "A" 'rep-modified-accept-changes)
+    (define-key map "n" 'rep-modified-skip-to-next-change)
+    (define-key map "p" 'rep-modified-skip-to-prev-change)
+    map))
+
+(defvar rep-modified-minor-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map rep-key-prefix rep-modified-mode-map)
+    map)
+  "Keymap used for binding rep-modified minor mode.")
 
 (define-minor-mode rep-modified-mode
   "Toggle Rep Modified mode.
@@ -601,38 +586,22 @@ that use perl's syntax \(and are interpreted using perl\).
      to examine and undo the changes made by rep substitutions.
      These are commands such as \\[rep-modified-undo-change-here], and
       \\[rep-modified-revert-all-changes].
-See \\[rep-define-rep-modified-mode-keybindings] or \\[rep-standard-setup]."
+      See: \\{rep-modified-mode-map}."
   ;; The initial value.
   :init-value nil
   ;; The indicator for the mode line.
   :lighter " Rep"
+  :keymap     rep-modified-minor-mode-map
   )
 
-(defun rep-define-rep-modified-mode-keybindings (&optional prefix)
-  "Defines the keybindings in rep-modified-mode using given PREFIX.
-The PREFIX defaults to the 'C-c .'."
-;; TODO seems heavy-handed (potential security hole if prefix is untrusted)
-;; but this works to start with
-  (unless prefix (setq prefix "\C-c."))
-  (let ( (define-perl-bindings-string
-           (replace-regexp-in-string
-            "%s" prefix
-            "'(lambda ()
-              (local-set-key \"%sw\"  'rep-modified-what-was-changed-here-verbose)
-              (local-set-key \"%sx\"  'rep-modified-examine-properties-at-point)
-              (local-set-key \"%sX\"  'describe-text-properties)
-              (local-set-key \"%su\"  'rep-modified-undo-change-here)
-              (local-set-key \"%sR\"  'rep-modified-revert-all-changes)
-              (local-set-key \"%s@\"  'rep-modified-accept-changes)
-              (local-set-key \"%sA\"  'rep-modified-accept-changes)
-              (local-set-key [tab]    'rep-modified-skip-to-next-change)
-              (local-set-key [backtab] 'rep-modified-skip-to-prev-change)
-               )"
-            ))
-         )
-    (add-hook 'rep-modified-mode-hook (eval (read define-perl-bindings-string)))
-    ))
 
+(defun rep-define-rep-modified-rebind-tab ()
+  "Re-binds the tab (and backtab) key in rep-modified-mode."
+  (define-key rep-modified-minor-mode-map [tab]
+    'rep-modified-skip-to-next-change)
+  (define-key rep-modified-minor-mode-map [backtab]
+    'rep-modified-skip-to-prev-change)
+  )
 
 ;;--------
 ;; rep-substitutions-mode function(s)
@@ -643,9 +612,13 @@ selected.  Each substitution command and the changes it produces
 in the other window will be highlighted in corresponding colors.
 Turns off font-lock to avoid conflict with existing syntax coloring."
   (interactive)
-  (let ( raw-change-metadata change-metadata
-         changes-list-file changes-list-buffer
-         target-file       target-file-buffer
+  (if rep-trace (message "%s" "rep-substitutions-apply-to-other-window"))
+  (let ( raw-change-metadata
+         change-metadata
+         changes-list-file
+         changes-list-buffer
+         target-file
+         target-file-buffer
          backup-file
          )
 
@@ -661,7 +634,11 @@ Turns off font-lock to avoid conflict with existing syntax coloring."
 
     (setq raw-change-metadata
           (rep-run-perl-substitutions
-           changes-list-file target-file backup-file))
+           changes-list-file target-file backup-file t))
+
+    (if rep-debug
+        (message "raw-change-metadata from rep-run-perl-substitutions: %s"
+                 raw-change-metadata))
 
     (cond ((not (> (length raw-change-metadata) 1))
            (message "No changes made by substitutions."))
@@ -670,11 +647,14 @@ Turns off font-lock to avoid conflict with existing syntax coloring."
           (t
            (setq change-metadata
                  (rep-unserialize-change-metadata raw-change-metadata))
-            (rep-markup-target-buffer
+
+           (if rep-debug
+             (message "change-metadata from rep-unserialize-change-metadata: %s"
+                        change-metadata))
+
+           (rep-markup-target-buffer-replay-perl-changes
                change-metadata target-file-buffer backup-file)
            (rep-markup-substitution-lines changes-list-buffer)
-           (unless rep-live-dangerously
-             (setq buffer-read-only t))
 
            ;; jump to the first change in the modified buffer
            (let ((spot (next-single-property-change
@@ -687,16 +667,17 @@ Turns off font-lock to avoid conflict with existing syntax coloring."
                     (goto-char spot)
                     (rep-modified-what-was-changed-here)
                     )))
-           ))
+           )
+          )
     ))
 
 ;; Used by rep-substitutions-apply-to-other-window
 (defun rep-generate-backup-file-name (file)
   "Given a FILE name, generate a unique backup file name.
 If `rep-standard-backup-location' is non-nil, it will be used
-as the standard location for backups, otherwise, a \".rep\"
-sub-directory will be used in parallel with the FILE."
+as the standard location for backups, otherwise, a "e"sb -directory will be used in parallel with the FILE."
   (interactive)
+  (if rep-trace (message "%s" "rep-generate-backup-file-name"))
   (let* ((file-location (file-name-directory file))
          (name          (file-name-nondirectory file))
          (dir (or
@@ -717,6 +698,7 @@ sub-directory will be used in parallel with the FILE."
   "Probe the system for the \"rep.pl\" external program.
 Returns t if found, nil otherwise.  As a side-effect, generates a
 warning message if it isn't found."
+  (if rep-trace (message "%s" "rep-probe-for-rep-pl"))
   (let* (
          (rep-pl "rep.pl")
          (cmd    (format "%s --version" (shell-quote-argument rep-pl)))
@@ -731,30 +713,40 @@ warning message if it isn't found."
            t)
          )
     ))
-;; (rep-probe-for-rep-pl)
-
 
 ;; Used by rep-substitutions-apply-to-other-window
-(defun rep-run-perl-substitutions ( changes-list-file target-file backup-file )
+(defun rep-run-perl-substitutions ( changes-list-file target-file backup-file
+                                       &optional no-changes )
   "Applies substitutions in a CHANGES-LIST-FILE to a TARGET-FILE.
 The CHANGES-LIST-FILE should contain substitutions in the traditional
 unix 's///' style \(perl5 flavor\), one on each line.  The changes
 are made throughout the TARGET-FILE as though the /g modifier was
-used on all of them.  The original file is saved as the given BACKUP-FILE."
+used on all of them.  The original file is saved as the given BACKUP-FILE.
+If NO-CHANGES is t, then the TARGET-FILE will not actually be modified."
+  (if rep-trace (message "%s" "rep-run-perl-substitutions"))
   (let* (
          (rep-pl "rep.pl")
-         (perl-rep-cmd
-               (format
-                "%s --backup %s --substitutions %s --target %s "
+         perl-rep-cmd
+         data
+         cmd-format
+         )
+    (setq cmd-format
+          (cond (no-changes
+                 "%s --backup %s --substitutions %s --target %s --trialrun"
+                 )
+                (t
+                 "%s --backup %s --substitutions %s --target %s "
+                 )
+                ))
+    (setq perl-rep-cmd
+               (format cmd-format
                 rep-pl
                 (shell-quote-argument
-                 backup-file)
+                  backup-file)
                 (shell-quote-argument
-                 changes-list-file)
+                  changes-list-file)
                 (shell-quote-argument
-                 target-file)))
-         data
-         )
+                  target-file)))
     (if rep-debug
         (message "%s" perl-rep-cmd))
     (setq data (shell-command-to-string perl-rep-cmd))
@@ -763,52 +755,215 @@ used on all of them.  The original file is saved as the given BACKUP-FILE."
     data))
 
 ;; Used by rep-substitutions-apply-to-other-window
-(defun rep-markup-target-buffer (data target-buffer backup-file)
-  "Applies the given change DATA to the TARGET-BUFFER.
+(defun rep-markup-target-buffer-replay-perl-changes (metadata target-buffer
+                                                              backup-file)
+  "Applies the given change METADATA to the TARGET-BUFFER.
 Highlights the changes using different color faces.
-Requires the DATA to be unserialized into a list-of-lists form."
+Sets rep-last-change for each modified region to the record
+number of the METADATA.
+Sets up the rep-change-stack text-property for each modification.
+Presumes the target-buffer contains the original, unmodified
+text.
+Requires the METADATA to be in a list-of-alists form."
+  (if rep-trace (message "%s" "rep-markup-target-buffer-replay-perl-changes"))
   (set-buffer target-buffer)
-  ;; if font-lock-mode was on, save that information
+  ;; if font-lock-mode was on in target, save that information
   (setq rep-font-lock-buffer-status font-lock-mode)
-  (revert-buffer t t t) ;;last option is "preserve-modes", what does it do?
   (font-lock-mode -1)
+
   (rep-modified-mode t)
 
   (push backup-file rep-previous-versions-stack)  ;; buffer-local variable
-  (setq rep-change-metadata data)                 ;; buffer-local variable
+  (setq rep-change-metadata metadata)             ;; buffer-local variable
+  (let ((count (length rep-change-metadata))
+        (i 0)
+        record
+        )
+    (while (<= i (1- count)) ;; stepping forward through change records
+      ;; skip any empty records (if any)
+      (if (setq record (aref rep-change-metadata i))
+          (let* (
+                 (pass   (rep-get 'record 'pass))
+                 (beg    (rep-get 'record 'beg))
+                 (end    (rep-get 'record 'end))     ;; after change
+                 (fin    (rep-adjust-end end beg))
+                 (delta  (rep-get 'record 'delta))
+                 (end1   (- end delta))              ;; before change
+                 (fin1   (rep-adjust-end end1 beg))
+                 (orig   (rep-get 'record 'orig))
+                 (rep    (rep-get 'record 'rep))      ;; NEW
+                 (pre    (rep-get 'record 'pre))      ;; NEW
+                 (post   (rep-get 'record 'post))     ;; NEW
+                 (markup-face (rep-lookup-markup-face pass))
+                 string1
+                 )
 
-  (dolist (record data)
-    (let* ((pass   (nth 0 record))
-           (beg    (nth 1 record))
-           (end    (nth 2 record))
-           (delta  (nth 3 record))
-           (orig   (nth 4 record))
-           (markup-face (rep-lookup-markup-face pass))
-           (len    (+ (length orig) delta) )
-           )
-      (put-text-property beg end 'face markup-face target-buffer)
-      (put-text-property beg
-                         (rep-adjust-end end beg)
-                         'rep-last-change record)
+            ;; check the substring at beg & end1: make sure it matches orig
+            (setq string1 (buffer-substring-no-properties beg end1))
+            (cond ((not (string= string1 orig))
+                   (message
+                    "Warning: at %d, \"%s\" is not \"%s\"" beg string1 orig)
+                   )
+                  (t
+                   ;; TODO EXTRA CREDIT: try to recover from problems here.
+                   ;; check pre/post values, use them to sync up, in the
+                   ;; event of positioning errors
+                   ;; (robust, defensive programming, or sloppy hackery? You
+                   ;; decide).
+                   )
+                  )
+            ;; delete the old substring, insert rep
+            (setq string1 (buffer-substring beg end1))
+            (delete-region beg end1)
+            (goto-char beg)
+            (insert rep)
+
+            ;; markup: set text-properties face, rep-last-change...
+            (put-text-property beg
+                               end 'face markup-face)
+
+            (put-text-property beg fin 'rep-last-change i) ;; the record number
+
+            ;; push stack with string1 (orig *with* text-properties)
+            (rep-push-change-stack string1 beg end)
+            ))
+      (setq i (1+ i))
+      )
+    ))
+
+(defun rep-push-change-stack (string beg end)
+  "Given the BEG and END of a range, pushes the STRING string onto the stack.
+The stack in this case is the text-property \"rep-change-stack\".
+This operates on the current buffer."
+  (if rep-trace (message "%s" "rep-push-change-stack"))
+  (let* ( stack i fin )
+    ;; we must preserve history of each char, so we must push the
+    ;; stack for each, individually, though we're pushing the same
+    ;; string onto every stack.
+    (setq fin (rep-adjust-end end beg))
+    (setq i beg)
+    (while (<= i fin)
+      (setq stack
+            (get-text-property i
+                               'rep-change-stack))
+      (push string stack)
+      (put-text-property i
+                         (1+ i)
+                         'rep-change-stack stack)
+      (setq i (1+ i))
       )))
 
+(defun rep-pop-change-stack (beg end)
+  "Given the BEG and END of a range, pops the current state off of the stack.
+If the top of the stack for each character in the range contains the same
+string, it will return that string.  Otherwise, it will refuse to pop, and
+will return nil.
+The stack in this case is the text-property \"rep-change-stack\".
+This operates on the current buffer."
+  (if rep-trace (message "%s" "rep-pop-change-stack"))
+  (let* (
+         (temp-string "")
+         (string "")
+         (stack ())
+         (fin (rep-adjust-end end beg))
+         (temp-list ())
+         )
+    ;; peek at top values of stack for all chars, stash in temp-list
+    (let ((i beg))
+      (while (<= i (1- fin))
+        (setq stack
+              (get-text-property i
+                                 'rep-change-stack
+                                ))
+        (setq temp-string
+              (nth 0 stack))
+
+        (unless (stringp temp-string)
+          (message "On char %d, not a string: %s" i temp-string))
+
+        ;; was getting stringp error, when (nth 0 stack) was nil
+        (cond ((stringp temp-string)
+               (setq string
+                     (substring-no-properties temp-string))
+
+               (push string temp-list)
+               ))
+        (setq i (1+ i))
+        ))
+
+    ;; skip unless the top of the stack is same for all chars
+    (cond ((not (rep-all-ok-p temp-list))
+           nil)
+          (t
+           ;; pop stack on each character in range
+           (let ((i beg))
+             (while (<= i (1- fin))
+               (setq stack
+                     (get-text-property i
+                                        'rep-change-stack
+                                        ))
+               (setq string
+                     (pop stack))
+               (put-text-property i
+                                  (1+ i)
+                                  'rep-change-stack
+                                  stack
+                                  )
+               (setq i (1+ i))
+               ))
+           string
+           ))
+    ))
+
+(defun rep-all-ok-p (string-list)
+  "Check that all elements in STRING-LIST are the same string *and* non-nil."
+  (if rep-trace (message "%s" "rep-all-ok-p"))
+  (and (car string-list)
+       (rep-all-equal-p temp-list)
+       ))
+
+(defun rep-all-equal-p (string-list)
+  "Check that all elements in STRING-LIST are the same string.
+If the list is short, with less than two elements, this will return t,
+declaring them \"all-equal\" by definition."
+  (if rep-trace (message "%s" "rep-all-equal-p"))
+  (let* ((len (length string-list)))
+    (cond ((<= len 1) ;; for 0 or 1 elements, by definition, all are equal
+           t)
+          (t
+           (let* ((check-val (pop string-list)) ;; ref to compare to others
+                  (temp-list (mapcar (function
+                                      (lambda (str)
+                                        (string= str check-val)))
+                                     string-list))
+                  (accum t)
+                  )
+             (dolist (condy temp-list)
+               (setq accum (and accum condy))
+               )
+             accum)))))
+
+;; Used by rep-markup-target-buffer-common
+;;         rep-markup-target-buffer-replay-perl-changes
 (defun rep-adjust-end (end beg)
   "If END and BEG are equal, returns END plus 1, otherwise just END.
 This is to be used with the markup routines that may need to set a text
 property on a string 0 characters long."
+  (if rep-trace (message "%s" "rep-adjust-end"))
   (let ((adjusted-end
-         (cond ((equal beg end)
+         (cond ((= beg end)
                 (1+ end))
                (t
                 end))))
     adjusted-end))
 
-
+;; Used by rep-modified-undo-change-here
 (defun rep-unadjust-end (end beg expected-len)
   "When END > BEG and yet EXPECTED-LEN is 0, return END minus 1, otherwise END.
-This is to be used to compensate for when the markup routines needed to
-set a text property on a string 0 characters long, and cheated pretending
-it was one char long."
+This is used to compensate for when the markup routines need to
+set a text property on a string 0 characters long: we cheat, and
+pretend the string is one char long."
+  (if rep-trace (message "%s" "rep-unadjust-end"))
   (let ((diff (- end beg))
         adjusted-end
         )
@@ -822,127 +977,40 @@ it was one char long."
                 ))
     adjusted-end))
 
-(defun rep-refresh-markup-target-buffer (buffer)
-  "Re-applies the change data from `rep-change-metadata' to the BUFFER.
-As written this is designed to be used only sometime after
-\\[rep-markup-target-buffer] has been used on the buffer at least once."
-  (set-buffer buffer)
-  (setq buffer-read-only nil)
-  (rep-modified-mode t)
-
-  ;; clearing the old rep-last-change values before re-applying
-  ;; (also clears face settings)
-  (rep-kick-props buffer)
-
-  (goto-char (point-min))
-  (dolist (record rep-change-metadata)
-    (let* ((pass   (nth 0 record))
-           (beg    (nth 1 record))
-           (end    (nth 2 record))
-           (delta  (nth 3 record))
-           (orig   (nth 4 record))
-           (markup-face (rep-lookup-markup-face pass))
-           (len    (+ (length orig) delta) )
-           )
-      (put-text-property beg end 'face markup-face buffer)
-      (put-text-property beg
-                         (rep-adjust-end end beg)
-                         'rep-last-change record)
-      ))
-  )
-
+;; Used by rep-modified-accept-changes
 (defun rep-kick-props (&optional buffer)
   "Clears the rep.el properties for the entire BUFFER.
 Defaults to current buffer."
-;;  (interactive) ;; DEBUG
+  (if rep-trace (message "%s" "rep-kick-props"))
   (setq buffer-read-only nil)
   (unless buffer
     (setq buffer (current-buffer)))
   (set-buffer buffer)
-  (remove-list-of-text-properties (point-min) (point-max) '(rep-last-change))
-  (remove-text-properties (point-min) (point-max) '(face nil))
-)
-
-;; TODO is there a way to be more selective, and only clear rep-* faces?
-(defun rep-clear-face (&optional buffer)
-  "Clears the face settings for the entire BUFFER. Defaults to current buffer."
-;;  (interactive) ;; DEBUG
-  (unless buffer
-    (setq buffer (current-buffer)))
-  (set-buffer buffer)
+  (remove-list-of-text-properties (point-min) (point-max)
+                                  '(rep-last-change
+                                    rep-change-stack
+                                    ))
+  ;; clears *all* face settings.  if you want some, font-lock
+  ;; better put 'em there.  (TODO)
   (remove-text-properties (point-min) (point-max) '(face nil))
   )
 
-
-;; used by rep-modified-undo-change-here
-(defun rep-revise-locations (undo-record buffer)
-  "Removes the UNDO-RECORD from the change metadata for BUFFER.
-Removes the matching record from the `rep-change-metadata' buffer-local var,
-and also re-numbers the beg and end fields of the whole structure,
-if necessary, to compensate for any changes in string length due to this
-undo."
-  (save-excursion
-    (let ((initial-buffer (current-buffer)))
-      (set-buffer buffer)
-      (let* ((change-metadata rep-change-metadata)  ;; buffer-local var
-             (undo-pass   (nth 0 undo-record))
-             (undo-beg    (nth 1 undo-record))
-             (undo-end    (nth 2 undo-record))
-             (undo-delta  (nth 3 undo-record))
-             (undo-orig   (nth 4 undo-record))
-             new-data
-             )
-        (dolist (record (nreverse change-metadata))
-          (let* (
-                 (pass   (nth 0 record))
-                 (beg    (nth 1 record))
-                 (end    (nth 2 record))
-                 (delta  (nth 3 record))
-                 (orig   (nth 4 record))
-                 (markup-face (rep-lookup-markup-face pass))
-                 (len    (+ (length orig) delta) )
-                 new-record
-                 )
-            (cond ((not (equal record undo-record))
-                   (cond ((> beg undo-beg)
-                          (setq beg (- beg undo-delta))
-                          ))
-                   (cond ((> end undo-beg)
-                          (setq end (- end undo-delta))
-                          ))
-                   (setq new-record (list pass beg end delta orig))
-                   (push new-record new-data)
-                   ))
-            ))
-        (setq rep-change-metadata new-data)
-        )
-      (set-buffer initial-buffer)
-      )))
-
-
 ;; used by: rep-substitutions-apply-to-other-window
 (defun rep-unserialize-change-metadata (data)
-  "Converts the raw, serialized DATA from rep.pl to a lisp data structure.
-Creates a list of lists, with records in the same order as the lines of DATA."
-  (let* ( change-metadata
-          (substitution-lines (rep-split-on-semicolon-delimited-lines data))
-          ;; also unwhacks quoted semi-cs
-          )
-  (dolist (line (nreverse substitution-lines))
-    (cond ((not (string-equal "" line)) ;; skip blank lines
-           ;; split each line into five fields
-           (let* (
-                  (fields (rep-split-limited ":" line 5) )
-                  (pass   (string-to-number (nth 0 fields)))
-                  (beg    (string-to-number (nth 1 fields)))
-                  (end    (string-to-number (nth 2 fields)))
-                  (delta  (string-to-number (nth 3 fields)))
-                  (orig   (nth 4 fields))
-                  ;; (len    (+ (length orig) delta) )
-                  )
-             (push (list pass beg end delta orig) change-metadata)
-              ))))
-  change-metadata))
+  "Converts the raw DATA from rep.pl to a lisp data structure.
+That \"raw\" DATA is an aref of hrefs, and it is passed in JSON
+form, so simply using the json package to decode it gets an
+elisp array of alists."
+  (if rep-trace (message "%s" "rep-unserialize-change-metadata"))
+  (let* (change-metadata)
+    (cond (data
+           (setq change-metadata (json-read-from-string data))
+           )
+          (t
+           (message "No change data returned from rep.pl.")
+           ))
+    change-metadata))
+
 
 ;; Used by rep-substitutions-apply-to-other-window
 (defun rep-markup-substitution-lines (buffer)
@@ -953,8 +1021,7 @@ Assign a color to each substitution command in the buffer,
 to \\[rep-lookup-markup-face]\).
 Presumes all substitution commands begin with \"s\".
 Acts on the given BUFFER, but leaves the current window active."
-  ;; if font-lock-mode was on, save that information
-  (setq rep-font-lock-buffer-status font-lock-mode)
+  (if rep-trace (message "%s" "rep-markup-substitution-lines"))
   (save-excursion ;; but that trick *never* works... so don't trust it
     (let* ( (original-buffer (current-buffer))
             (comment_pat  "^\s*?#")
@@ -988,9 +1055,10 @@ Acts on the given BUFFER, but leaves the current window active."
       )
     ))
 
+;; Used by: rep-modified-accept-changes, rep-modified-revert-all-changes
 (defun rep-substitutions-mode-p ()
   "Check if the current buffer has the rep-substitutions-mode on."
-;; since substitutions-mode is a major mode, this should be easish.
+  (if rep-trace (message "%s" "rep-substitutions-mode-p"))
   (let* ((this-mode major-mode)
          (mode-name "rep-substitutions-mode")
          )
@@ -1005,6 +1073,7 @@ Acts on the given BUFFER, but leaves the current window active."
   "Revert last substitutions, restoring the previous backup file.
 Uses the `rep-previous-versions-stack' buffer local variable."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-revert-all-changes"))
   (let* ( (current-buffer-file-name (buffer-file-name))
           (previous-file (pop rep-previous-versions-stack))
           (preserve-stack rep-previous-versions-stack)
@@ -1035,24 +1104,22 @@ Uses the `rep-previous-versions-stack' buffer local variable."
 
 ;; TODO could write an inverse of this:
 ;;     rep-modified-display-changes-again
-;; (maybe: have C-u prefix do the inverse?)
 (defun rep-modified-accept-changes ()
   "Accept changes made in buffer, return to normal state.
 Restores the standard syntax coloring, etc."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-accept-changes"))
   (let ((file  (buffer-file-name))
         )
     (setq buffer-read-only nil)
     (rep-modified-mode -1)
+
     ;; turn font-lock back on if it was on
-    ;; TODO buffer-local amnesia problem. Just turn it on.
-    ;;(cond (rep-font-lock-buffer-status
+    (cond (rep-font-lock-buffer-status
         (font-lock-mode 1)
         (font-lock-fontify-buffer)
-    ;;   ))
+        ))
 
-    ;; manually restoring behavior of tab (hack)
-    (local-set-key [tab] 'indent-according-to-mode)
     (rep-kick-props)
     (save-buffer)
     ;; also restore cperl syntax colors in substitutions window
@@ -1069,6 +1136,7 @@ Restores the standard syntax coloring, etc."
   "Move forward to the next beginning point of a changed region.
 Uses `rep-last-change'."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-skip-to-next-change"))
   (let* ((property 'rep-last-change)
          (loc (point))
          )
@@ -1092,6 +1160,7 @@ Uses `rep-last-change'."
   "Move back to the previous changed region, stopping at the beginning point.
 Uses `rep-last-change'."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-skip-to-prev-change"))
   (let* ((property 'rep-last-change)
          (loc (point))
          )
@@ -1117,6 +1186,7 @@ This function displays the properties in the message bar,
 as opposed to `describe-text-properties' which opens another
 buffer window for them."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-examine-properties-at-point"))
   (let* (capture)
     (setq capture (text-properties-at (point)))
     (message (pp-to-string capture))
@@ -1125,14 +1195,20 @@ buffer window for them."
 (defun rep-modified-what-was-changed-here ()
   "Tells you the original string was before it was replaced."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-what-was-changed-here"))
   (let* ( (last-change (get-text-property (point) 'rep-last-change))
           )
-    (cond (last-change
-            (let ((pass (nth 0 last-change))
-                  (last-string (nth 4 last-change))
+    (cond ((eq rep-change-metadata nil)
+           (message "Problem in %s: rep-change-metadata is nil."
+                    "rep-modified-what-was-changed-here")
+           )
+          (last-change
+           (let* (
+                  (record (aref rep-change-metadata last-change))
+                  (last-string (rep-get 'record 'orig))
                   )
-              (message "Was: %s" last-string)
-              ))
+             (message "Was: %s" last-string)
+             ))
           )
     ))
 
@@ -1143,6 +1219,7 @@ inside a change, tries to advance the cursor to the next change.
 This also supplies additional information like the number of the
 substitution that made the change."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-what-was-changed-here-verbose"))
   (let* ( (last-change (get-text-property (point) 'rep-last-change))
           )
     (cond ( (not last-change) ;; we are not yet inside a changed region
@@ -1151,8 +1228,10 @@ substitution that made the change."
             (setq last-change (get-text-property (point) 'rep-last-change))
             ))
     (cond (last-change
-            (let ((pass (nth 0 last-change))
-                  (last-string (nth 4 last-change))
+            (let* (
+                  (record (aref rep-change-metadata last-change))
+                  (last-string (rep-get 'record 'orig))
+                  (pass        (rep-get 'record 'pass))
                   )
               (message
                "This was: %s (changed by the substitution on line: %d)."
@@ -1171,6 +1250,7 @@ Undos the change at point, or if none is there, warns and does nothing.
 Note that this has nothing to do with the usual emacs \"undo\"
 system, which operates completely independently."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-undo-change-here"))
   (let* ((buffer         (current-buffer))
          (pair           (rep-modified-extent-of-change))
          (beg            (nth 0 pair))
@@ -1181,31 +1261,35 @@ system, which operates completely independently."
            (message "No changed region to undo at point.")
            )
           (t
-           (let* ((record
+           (let* ((record-number
                    (get-text-property beg 'rep-last-change))
-                  (pass  (nth 0 record))
-                  (delta (nth 3 record))
-                  (orig  (nth 4 record))
+
+                  (record (aref rep-change-metadata record-number))
+                  (pass        (rep-get 'record 'pass))
+                  (delta       (rep-get 'record 'delta))
+                  (orig        (rep-get 'record 'orig))
+
                   (orig-len  (length orig))
                   (expected-len (+ orig-len delta))
-                  (existing (buffer-substring-no-properties beg end))
+
                   (end (rep-unadjust-end end beg expected-len))
+                  (existing (buffer-substring-no-properties beg end))
                   )
              (cond ((not (= expected-len (- end beg)))
                     (message (concat
                               (format "Can't revert fragment: %s. " existing)
                               "Must undo adjacent change first." )) )
                    (t
-                    (setq buffer-read-only nil)
-                    (delete-region beg end)
-                    (insert orig)
-                    (rep-revise-locations record buffer)
-                    (rep-refresh-markup-target-buffer buffer)
-                    (goto-char beg)
-                    (unless rep-live-dangerously
-                      (setq buffer-read-only t))
-                    (message "Change reverted: %s" existing)
-                    )))
+                    (let* ((stringy ""))
+
+                      (setq stringy (rep-pop-change-stack beg end))
+                      (delete-region beg end)
+                      (goto-char beg)
+                      (insert stringy)
+
+                     (goto-char beg)
+                     (message "Change reverted: %s" existing)
+                     ))))
            ))))
 
 ;;--------
@@ -1219,29 +1303,45 @@ returning the set of results as a list of strings.  Note:
 you can be both at the \"start\" and the \"end\", because
 a region can be one-character long.
 Returns nil if the property is not defined."
+  (if rep-trace (message "%s" "rep-rising-or-falling-edge"))
   (unless loc
     (setq loc (point)))
-  (let* ((last (get-text-property (1- loc) property))
-         (this (get-text-property loc property))
-         (next (get-text-property (1+ loc) property))
-         (ret ())
-         )
-    (cond ((not this)
+  (let ((ret ())
+        ;; the property's setting at this point
+        (this (get-text-property loc property))
+        )
+    (cond ((not this) ;; we're not inside a marked region
            (setq ret nil))
-          (t ;; we're inside
-           (cond ((and (equal next this) (equal last this))
-                  (push "middle" ret))
-                 ((not (equal last this))
-                   (push "start" ret))
-                 ((not (equal next this))
-                   (push "end" ret))
-                 )))
+          (t ;; we are inside
+           ;; first check whether we're at the beginning and/or end of buffer
+           ;; (Note: the buffer might have only one character)
+           (if (and this (eq loc (point-min)))
+               (push "start" ret)
+             )
+           (if (and this (eq loc (point-max)))
+               (push "end" ret)
+             )
+           ;; only if we're not at the top or bottom
+           (cond ((not (or
+                        (eq loc (point-min)) (eq loc (point-max))))
+                  (let* ((prev (get-text-property (1- loc) property))
+                         (next (get-text-property (1+ loc) property))
+                         )
+                    (cond ((and (equal next this) (equal prev this))
+                           (push "middle" ret))
+                          ((not (equal prev this))
+                           (push "start" ret))
+                          ((not (equal next this))
+                           (push "end" ret))
+                          ))))
+           ))
     ret))
 
 (defun rep-modified-at-start-of-changed-region ()
   "Returns t if point is at the start of a new rep-last-change regions.
 That means we're at the beginning of a range where the text-property
 rep-last-change is set to some value."
+  (if rep-trace (message "%s" "rep-modified-at-start-of-changed-region"))
   (let* ((list (rep-rising-or-falling-edge 'rep-last-change))
          (ret (member "start" list))
          )
@@ -1251,22 +1351,23 @@ rep-last-change is set to some value."
   "Returns t if point is at the end of a new rep-last-change regions.
 That means we're at the beginning of a range where the text-property
 rep-last-change is set to some value."
+  (if rep-trace (message "%s" "rep-modified-at-end-of-changed-region"))
   (let* ((list (rep-rising-or-falling-edge 'rep-last-change))
          (ret (member "end" list))
          )
     ret))
 
-;; TODO an older routine that could be refactored in terms of the above.
-;; No known bugs, however.
 (defun rep-modified-extent-of-change ()
   "Returns the BEG and END of extent of the change at the cursor.
 This looks for the `rep-last-change' text-property.  If the cursor
 is inside a modified region, this function finds the extent of it.
 Returns a list of the two coordinates (character numbers
 counting from the start of the buffer)."
-;; The difficulty here is that if we're *right* at the start of the change,
+  (if rep-trace (message "%s" "rep-modified-extent-of-change"))
+;; The difficulty here is that if we're just at the start of the change,
 ;; "previous-single-property-change" wants to skip us way back to the
 ;; previous change.  We have to dance around this irritating behavior.
+;; TODO similar problem at end of change?
   (interactive)
   (let ( mod beg end peek-back )
     (setq mod (get-text-property (point) 'rep-last-change))
@@ -1274,21 +1375,66 @@ counting from the start of the buffer)."
     (cond (mod
            ;;... but we need to worry about being at the start
            ;; of the change.
-           (setq peek-back
-                 (get-text-property (1- (point)) 'rep-last-change))
-           (cond ((not (equal peek-back mod))
-                  (setq beg (point))
-                  )
-                 (t
-                  (setq beg
+           (setq beg
+                 ;; TODO break-out as rep-move-to-start-of-change
+                 (cond ((rep-modified-at-start-of-changed-region)
+                        (point)
+                        )
+                       (t
                         (previous-single-property-change (point)
-                           'rep-last-change))
-                  ))
+                                                         'rep-last-change)
+                        )))
            (setq end
+                 ;; TODO break-out as rep-move-to-end-of-change.  mimic above?
                  (next-single-property-change (point)
-                    'rep-last-change))
-           ))
+                                              'rep-last-change))
+                 )
+          ;; any handling of the not-inside-change-case?
+          )
     (list beg end)))
+
+;;========
+;; general elisp utililities
+;; alist manipulation
+
+(defun rep-get (alist-symbol key)
+  "Look up value for given KEY in ALIST.
+Example:
+   (rep-get 'rep-general-alist 'C)
+Note: must quote alist name."
+  (if rep-trace (message "%s" "rep-get"))
+  (let* ((value (cdr (assoc key (eval alist-symbol))))
+         )
+
+    ;; blatant hackery... sometimes it's car/cdr, sometimes just cdr.
+    (setq value
+          (cond ((listp value)
+                 (car value)
+                 )
+                (t
+                 value
+                 )))
+
+    ;; automatic conversion of numeric strings to numbers
+    ;; (dammit, I'm a perl programmer!)
+    (cond ((not (stringp value))
+           value)
+          ((string-match "^[-+.0-9]+$" value)
+           (string-to-number (match-string 0 value))
+           )
+          (t
+           value)
+          )
+    ))
+
+(defun rep-set (alist-symbol key value)
+  "Store given VALUE under KEY in ALIST.
+Example:
+   (rep-set 'rep-general-alist 'C \"CCC\")
+Note: must quote alist name."
+  (if rep-trace (message "%s" "rep-set"))
+  (set alist-symbol (cons (list key value) (eval alist-symbol)))
+  )
 
 ;;========
 ;; debug tools
@@ -1296,6 +1442,7 @@ counting from the start of the buffer)."
 (defun rep-modified-select-change ()
   "Selects the changed region at point."
   (interactive)
+  (if rep-trace (message "%s" "rep-modified-select-change"))
   (let* ((pair (rep-modified-extent-of-change))
          (beg (nth 0 pair))
          (end (nth 1 pair)))
@@ -1304,24 +1451,5 @@ counting from the start of the buffer)."
     (goto-char end)
     (exchange-point-and-mark)
     ))
-
-(defun rep-modified-select-change-given-record ( record )
-  "Selects the changed region, given a line of change meta-data."
-  (interactive "s:Change meta-data record: ")
-  (let* ( (fields (rep-split-limited ":" record 5) )
-          (pass   (string-to-number (nth 0 fields)))
-          (beg    (string-to-number (nth 1 fields)))
-          (end    (string-to-number (nth 2 fields)))
-          (delta  (string-to-number (nth 3 fields)))
-          (orig   (nth 4 fields))
-          )
-    ; select the indicated region
-    (goto-char beg)
-    (set-mark beg)
-    (goto-char end)
-    (exchange-point-and-mark)
-    (message "Was: %s" orig)
-    ))
-
 
 ;;; rep.el ends here

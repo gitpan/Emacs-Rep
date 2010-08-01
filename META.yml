@@ -19,7 +19,7 @@ name: Emacs-Rep
 provides:
   Emacs::Rep:
     file: lib/Emacs/Rep.pm
-    version: 0.05
+    version: 0.06
 requires:
   Carp: 0
   Data::Dumper: 0
@@ -29,4 +29,4 @@ requires:
   warnings: 0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.05
+version: 0.06

@@ -25,11 +25,16 @@ rep.pl - perform a series of find an replaces
      -B                backup file name
      --backup          same
 
+     --trial           report change metadata without modifying target file
+
      -d                debug messages on
      --debug           same
      -h                help (show usage)
      -v                show version
      --version         show version
+
+     -T                make no changes to the input file, but report
+     --trailrun        metadata for changes that would've been made.
 
 
 =head1 DESCRIPTION
@@ -48,34 +53,25 @@ replaced to perform undo operations.
 The elisp code must choose a unique backup file name. This makes
 it possible to do reverts of an entire run of substitutions.
 
-The script returns a serialized data dump of the history
-of the changes to the text.  See the documentation routine
-L<serialize_change_metadata> in L<Emacs::Rep> for full
-details of this output format.
+The script returns a data dump of the history of the changes to
+the text.  This is in the form of an array of hashes, serialized
+using JSON.
 
-Roughly, you can expect output that looks like:
+The array is in the order in which the individual changes took
+place.  Each row has fields:
 
-  0:303:308:1:cars;
-  1:113:123:8:of;
-  1:431:441:8:of;
-  1:596:606:8:of;
-  2:330:355:23:.;
-  3:702:711:0:evening;
-  4:855:863:4:cane;
+  pass   the number of the "pass" through the file
+         (one pass per substitution command)
+  beg    begin point of changed string
+  end    end point of changed string
+  delta  the change in string length
+  orig   the original string that was replaced
+  rep    the replacement string that was substituted
+  pre    up to ten characters found before the replacement
+  post   up to ten characters found after the replacement
 
-Where the colon separated fields are:
-
- first: the "pass" through the file (one pass per substitution command)
- second: begin point of changed string
- third:  end point of changed string
- fourth: the delta, the change in string length
- fifth: the original string that was replaced
-
-Characters are counted from the beginning of the text,
-starting with 1.
-
-The fifth field may contain colons, but semicolons should be
-escaped with a backslash.
+Note: in "beg" and "end" characters are counted from the
+beginning of the text, starting with 1.
 
 =cut
 
@@ -96,18 +92,20 @@ use FindBin qw( $Bin );
 use lib ("$Bin/../lib",
          "$HOME/End/Cave/Rep/Wall/Emacs-Rep/scripts/../lib"); # TODO
 use Emacs::Rep     qw( :all );
+use JSON; # encode_json
 
-our $VERSION = 0.05;
+our $VERSION = 0.06;
 my  $prog    = basename($0);
 
 my $DEBUG   = 0;                 # TODO set default to 0 when in production
-my ( $locs_temp_file, $reps_file, $backup_file, $target_file );
+my ( $locs_temp_file, $reps_file, $backup_file, $target_file, $trialrun_flag );
 GetOptions ("d|debug"           => \$DEBUG,
             "v|version"         => sub{ say_version(); },
             "h|?|help"          => sub{ say_usage();   },
             "s|substitutions=s" => \$reps_file,
             "b|backup=s"        => \$backup_file,
             "f|target=s"        => \$target_file,
+            "T|trialrun"        => \$trialrun_flag,
            ) or say_usage();
 
 # get a series of finds and replaces
@@ -135,8 +133,23 @@ if ($@) {
   exit;
 }
 
-rename( $target_file, $backup_file ) or
-  croak "can't copy $target_file to $backup_file: $!";
+unless (-e $target_file) {
+  croak "file not found: $target_file";
+}
+my $backup_file_dir = dirname( $backup_file );
+unless (-d $backup_file_dir) {
+  croak "directory does not exist: $backup_file_dir";
+}
+
+# During a trial run, we make a copy of the input file,
+# and don't write out the modifications to it.
+if ( $trialrun_flag ) {
+  copy( $target_file, $backup_file ) or
+    croak "can't copy $target_file to $backup_file: $!";
+} else {
+  rename( $target_file, $backup_file ) or
+    croak "can't move $target_file to $backup_file: $!";
+}
 
 my $text;
 { undef $/;
@@ -147,22 +160,23 @@ my $text;
 
 # Apply the finds and replaces to text, recording the
 # change meta-data
-my $locations_aref;
+my $change_metadata_aref;
 eval {
-  $locations_aref =
+  $change_metadata_aref =
     do_finds_and_reps( \$text, $find_replaces_aref );
 };
 if ($@) {
   carp "Problem applying finds and replaces: $@";
   rename( $backup_file, $target_file ); # rollback!
 } else {
-  open my $fout, '>', $target_file or croak "$!";
-  print {$fout} $text;
-  close($fout);
-
-  # serialize the data to pass to emacs
-  my $flat_locs = serialize_change_metadata( $locations_aref );
-  print $flat_locs;
+  if ( not( $trialrun_flag ) ) { # then don't modify input file
+    open my $fout, '>', $target_file or croak "$!";
+    print {$fout} $text;
+    close( $fout );
+  }
+ # serialize the data to pass to emacs
+ my $chg_md_json = encode_json( $change_metadata_aref );
+ print $chg_md_json;
 }
 
 ### end main, into the subs

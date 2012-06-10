@@ -8,11 +8,11 @@ my $builder = Module::Build->new(
     dist_author         => q{Joseph Brenner <doom@kzsu.stanford.edu>},
     dist_version_from   => 'lib/Emacs/Rep.pm',
     build_requires => {
-        'Data::Dumper::Perltidy' => 0,
         'Test::More'             => 0,
         'FindBin'                => 0,
         'lib'                    => 0,
         'Test::Trap'             => 0,
+        'Test::Differences'      => 0,
       },
     requires => {
         'PPI'            => 0,

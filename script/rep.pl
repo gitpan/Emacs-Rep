@@ -4,13 +4,13 @@
 
 =head1 NAME
 
-rep.pl - perform a series of find an replaces
+rep.pl - perform a series of find and replaces
 
 =head1 SYNOPSIS
 
-  perl rep.pl --backup <backup_file> --substitutions <filename> --target <file_to_act_on>
+ rep.pl --backup <backup_file> --substitutions <filename> --target <file_to_act_on>
 
-  perl rep.pl -b <backup_file> -f <file_to_act_on> 's/foo/bar/'
+ rep.pl -b <backup_file> -f <file_to_act_on> 's/foo/bar/'
 
 =head2 USAGE
 
@@ -89,16 +89,15 @@ use Cwd            qw( cwd abs_path );
 use Env            qw( HOME );
 use Getopt::Long   qw( :config no_ignore_case bundling );
 use FindBin qw( $Bin );
-use lib ("$Bin/../lib",
-         "$HOME/End/Cave/Rep/Wall/Emacs-Rep/scripts/../lib"); # TODO
 use Emacs::Rep     qw( :all );
 use JSON; # encode_json
 
-our $VERSION = 0.07;
+our $VERSION = 0.08;
 my  $prog    = basename($0);
 
 my $DEBUG   = 0;                 # TODO set default to 0 when in production
-my ( $locs_temp_file, $reps_file, $backup_file, $target_file, $trialrun_flag );
+my ( $locs_temp_file, $reps_file, $backup_file, $target_file, $trialrun_flag,
+     $elisp_version );
 GetOptions ("d|debug"           => \$DEBUG,
             "v|version"         => sub{ say_version(); },
             "h|?|help"          => sub{ say_usage();   },
@@ -106,7 +105,21 @@ GetOptions ("d|debug"           => \$DEBUG,
             "b|backup=s"        => \$backup_file,
             "f|target=s"        => \$target_file,
             "T|trialrun"        => \$trialrun_flag,
+            "V|check_versions=s" =>\$elisp_version,
            ) or say_usage();
+
+if( $elisp_version ) {
+  my $pl_version = $VERSION;
+  my $report =
+    check_versions( $elisp_version, $pl_version );
+  if( $report =~ m{ \A Warning: \s+ }xms ) {
+    print $report, "\n";
+    exit;
+  } else {
+    exit 1;
+  }
+}
+
 
 # get a series of finds and replaces
 #   either from the substitutions file,
@@ -141,9 +154,9 @@ unless (-d $backup_file_dir) {
   croak "directory does not exist: $backup_file_dir";
 }
 
-# During a trial run, we make a copy of the input file,
-# and don't write out the modifications to it.
 if ( $trialrun_flag ) {
+  # During a trial run, we work on the copy of the input file,
+  # and never modify the original
   copy( $target_file, $backup_file ) or
     croak "can't copy $target_file to $backup_file: $!";
 } else {
@@ -217,6 +230,7 @@ sub say_version {
 }
 
 
+
 __END__
 
 =head1 AUTHOR
@@ -233,8 +247,18 @@ by the Free Software Foundation; or the Artistic License.
 
 See http://dev.perl.org/licenses/ for more information.
 
-=head1 BUGS
+=head1 TODO
 
-None reported... yet.
+o  Simplify the UI for command-line use:
+
+   o If there's no -f or --target, could guess that the first
+     item is the file, and the remaining arguments are
+     substitution commands.
+
+   o In the absence of -b of --backup, should have a default
+     scheme.
+
+   o Could it be that "rep.pl" is too short?  Possible name collison,
+     and this isn't really for command-line use in any case.
 
 =cut

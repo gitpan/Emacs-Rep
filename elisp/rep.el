@@ -1,6 +1,6 @@
 ;;; rep.el --- find and replace using perl5
 
-;; Copyright 2010 Joseph Brenner
+;; Copyright 2010,2012 Joseph Brenner
 ;;
 ;; Author: doom@kzsu.stanford.edu
 ;; Version: $Id: rep.el,v 0.0 2010/05/14 01:49:29 doom Exp $
@@ -119,6 +119,7 @@
 ;; The latest code:
 ;;   http://github.com/doomvox/rep
 
+
 ;;; Code:
 
 (provide 'rep)
@@ -133,7 +134,7 @@
 ;;---------
 ;;  User Options, Variables
 
-(defvar rep-version "0.07"
+(defvar rep-version "0.08"
  "Version number of the rep.el elisp file.
 This version should match the versions of
 the rep.pl script and the Rep.pm \(Emacs::Rep\)
@@ -190,21 +191,63 @@ back to any version.")
 
 (defvar rep-change-metadata ()
   "Buffer local stash of the change metadata returned from rep.pl.
-This has been unserialized into a list-of-lists.
-The fields in each record: pass, beg, end, delta, orig,
-all integers except for orig, which is a string.")
+This has been unserialized into an array of arrays of alists.
+The fields in each alist:
+  pass    the substitution number that made the change (integer)
+  beg     beginning of the changed region (integer)
+  end     end of the changed region (integer)
+  delta   change in length of the modified text
+  orig    the original string which was matched
+  rep     the replaced string
+  pre     some context characters from immediately before
+  post    some context characters from immediately after
+")
 (make-variable-buffer-local 'rep-change-metadata)
 (put 'rep-change-metadata 'risky-local-variable t)
 
-;; TODO Document?
-;; Text properties:
-;;   rep-last-change
-;;   rep-change-stack
+(defvar rep-property 'rep-previous-string
+  "A property that we guarantee will be present in any rep.el overlay.")
+
+;; =======
+;; documentation variables (used just for places to attach docstrings)
+
+(defvar rep-tag t
+  "The overlay property rep-tag is used to mark rep overlays so that
+the \\[remove-overlays] function can find them easily.  This
+proerties value is always set to t: according to the
+documentation, remove-overlays can't identify overlays solely by
+property, it needs to know the value of the property also.
+This var is just a place to attach a docstring for this property.
+")
+
+(defvar rep-metadata-pass nil
+  "The overlay property rep-metadata-pass contains the index for the outer
+array of the array-of-arrays-of-alists `rep-change-metadata'.
+This var is just a place to attach a docstring for this property.
+")
+
+(defvar rep-metadata-offset nil
+  "The overlay property rep-metadata-pass contains the index for the inner
+array of the array-of-arrays-of-alists `rep-change-metadata'.
+This var is just a place to attach a docstring for this property.
+")
+
+
+(defvar rep-previous-string nil
+  "The overlay property rep-previous-string contains a copy of the
+text before it was modified.
+This var is just a place to attach a docstring for this property.
+")
 
 
 ;;--------
 ;; colorized faces used to mark-up changes
 (defmacro rep-make-face (name number color1 color2)
+  "Generate a colorized face suitable to markup changes.
+NAME is the name of the face, COLOR1 is for light backgrounds
+and COLOR2 is for dark backgrounds.
+NUMBER is the corresponding rep substitution number (used only
+in the doc string for the face."
   `(defface ,name
   '((((class color)
       (background light))
@@ -254,9 +297,8 @@ all integers except for orig, which is a string.")
 (defvar rep-face-alist ()
  "Faces keyed by number (an integer to font association).
 Used by function \\[rep-lookup-markup-face].")
+
 ;; hardcoded look-up table (stupid, but simple)
-;; TODO (1) look into vectors... or just use an array?
-;;      (2) have rep-make-face generate.
 (setq rep-face-alist
       '(
         (00 . rep-00-face)
@@ -296,7 +338,10 @@ Used by function \\[rep-lookup-markup-face].")
         ))
 
 ;;--------
-;; utility functions used by commands below
+;; choosing faces
+
+;; Used by rep-markup-substitution-lines
+;;       & rep-modify-target-buffer
 (defun rep-lookup-markup-face (pass)
   "Given an integer PASS, returns an appropriate face from \\[rep-face-alist].
 These faces are named rep-NN-face where NN is a two-digit integer.
@@ -304,7 +349,7 @@ In the event that PASS exceeds the number of such defined faces, this
 routine will wrap around and begin reusing the low-numbered faces.
 If PASS is nil, this will return nil.
 Underlining may be turned on with `rep-underline-changes-color'."
-  (if rep-trace (message "%s" "rep-lookup-markup-face"))
+  (if rep-trace (rep-message (format "%s" "rep-lookup-markup-face")))
   (cond (pass
          (let ( markup-face limit index )
            (setq limit (length rep-face-alist) )
@@ -318,81 +363,9 @@ Underlining may be turned on with `rep-underline-changes-color'."
         (t
          nil)))
 
-(defun rep-split-on-semicolon-delimited-lines ( text )
-  "Splits text on line-endings with semi-colons.
-This allows for \"lines\" with embedded newlines, but any
-embedded semi-colons are expected to be escaped with a backslash.
-The escaping backslashes are removed."
-  (if rep-trace (message "%s" "rep-split-on-semicolon-delimited-lines"))
-  (let* (
-        ;; match a semicolon not preceeded by backwhack, at eol
-        ;; captures all to 1.  Note, this eats a preceeding char that
-        ;; isn't part of the end of line.
-        (pat "\\([^\\\\];\s*$\\)")
-        (fin (length text))
-        (beg  0) ;; start of next line, a cursor sweeping through text
-        (lines ())
-        end
-        )
-    (while (<= beg (1- fin))
-      (let* (;; look for location with expected line ending...
-             (loc (string-match pat text beg)) )
-        (cond (loc ;; if that's found, we've found end of next record
-               (setq end (1+ loc))
-               )
-              (t ;; loc is nil, so we're near end of text
-               (setq end fin)
-               ))
-        (setq line (substring text beg end))
-        (setq line
-              (replace-regexp-in-string "\\\\;" ";" line))
-        (push line lines)
-        (setq beg (string-match "^" text end))
-        ))
-    (setq lines (nreverse lines))
-    lines))
 
-(defun rep-sub-directory (file-location)
-  "Given a directory, returns path to a '.rep' sub-directory.
-If the sub-directory does not exist, this will create it. "
-  (if rep-trace (message "%s" "rep-sub-directory"))
-  (let* ( (dir
-           (substitute-in-file-name
-            (convert-standard-filename
-             (file-name-as-directory
-              (expand-file-name file-location))))) ;; being defensive
-          (standard-subdir-name ".rep")
-          (subdir (concat dir  standard-subdir-name))
-         )
-    (unless (file-directory-p subdir)
-      (make-directory subdir t))
-    subdir))
-
-(defun rep-generate-random-suffix ()
-  "Generate a three character suffix, pseudo-randomly."
-  (if rep-trace (message "%s" "rep-generate-random-suffix"))
-  ;; As written, this is always 3 upper-case asci characters.
-  (let (string)
-    (random t)
-    (setq string
-          (concat
-           (format "%c%c%c"
-                   (+ (random 25) 65)
-                   (+ (random 25) 65)
-                   (+ (random 25) 65)
-                   )
-           ))
-    ))
-
-;;---------
-;; controlling  modes
-
-;; This systems "controllers" come in three stages:
-;;  (1) a global key binding to create and edit a new substitutions file-buffer.
-;;  (2) a rep-substitutions-mode, with C-c.R binding to apply to other window.
-;;  (3) a rep-modified-mode: a minor-mode automatically enabled in that
-;;      other window once it's been modified.  This has keybindings to
-;;      examine, undo, revert or accept the changes.
+;;--------
+;;  set-up routines
 
 (defun rep-standard-setup (&optional dont-touch-tab)
   "Perform the standard set-up operations.
@@ -404,10 +377,11 @@ package will use more unobtrusive defaults.
 Note: the \"standard\" behavior is what is better documented.
 If the optional DONT-TOUCH-TAB flag is set to t, tab and backtab
 bindings should be left alone."
-  (if rep-trace (message "%s" "rep-standard-setup"))
+  (if rep-trace (rep-message (format "%s" "rep-standard-setup")))
   (cond ((rep-probe-for-rep-pl)
          (message "rep.pl must be in PATH for rep.el to work.")
          ))
+  (rep-check-versions)
 
   (unless dont-touch-tab
     (rep-define-rep-modified-rebind-tab))
@@ -426,6 +400,78 @@ bindings should be left alone."
     (if rep-debug
         (message "Defined bindings for key: S under the prefix %s" prefix)))
   )
+
+(defun rep-probe-for-rep-pl ()
+  "Probe the system for the \"rep.pl\" external program.
+Returns t if found, nil otherwise.  As a side-effect, generates a
+warning message if it isn't found."
+  (if rep-trace (rep-message (format "%s" "rep-probe-for-rep-pl")))
+  (let* (
+         (rep-pl "rep.pl")
+         (cmd    (format "%s --version" (shell-quote-argument rep-pl)))
+         (result (shell-command-to-string cmd))
+         (expected-pat
+          (format "^Running[ ]+%s[ ]+version:" rep-pl))
+         )
+    (cond ((not (string-match expected-pat result))
+           (message "The program %s does not seem to be in your PATH." rep-pl)
+           nil)
+          (t
+           t)
+         )
+    ))
+
+(defun rep-check-versions ()
+  "Make sure the versions of all three parts of the system match."
+  (if rep-trace (rep-message (format "%s" "rep-check-versions")))
+  (let* (
+         (rep-pl "rep.pl")
+         (version rep-version)
+         (cmd
+          (format "%s --check_versions='%s'"
+                  (shell-quote-argument rep-pl) version))
+         (result (shell-command-to-string cmd))
+         (warning-pat
+          (format "^Warning:"))
+         )
+    (cond ((string-match warning-pat result)
+           (message "%s" result)
+           nil)
+          (t
+           t)
+          )
+    ))
+
+(defun rep-probe-for-rep-pl ()
+  "Probe the system for the \"rep.pl\" external program.
+Returns t if found, nil otherwise.  As a side-effect, generates a
+warning message if it isn't found."
+  (if rep-trace (rep-message (format "%s" "rep-probe-for-rep-pl")))
+  (let* (
+         (rep-pl "rep.pl")
+         (cmd    (format "%s --version" (shell-quote-argument rep-pl)))
+         (result (shell-command-to-string cmd))
+         (expected-pat
+          (format "^Running[ ]+%s[ ]+version:" rep-pl))
+         )
+    (cond ((not (string-match expected-pat result))
+           (message "The program %s does not seem to be in your PATH." rep-pl)
+           nil)
+          (t
+           t)
+         )
+    ))
+
+
+;;========
+;; controlling  modes
+
+;; This system's "controllers" come in three stages:
+;;  (1) a global key binding to create and edit a new substitutions file-buffer.
+;;  (2) a rep-substitutions-mode, with a binding to apply to other window.
+;;  (3) a rep-modified-mode: a minor-mode automatically enabled in that
+;;      other window once it's been modified.  This has keybindings to
+;;      examine, undo, revert or accept the changes.
 
 (defun rep-open-substitutions ()
   "Open a new substitutions file buffer.
@@ -448,7 +494,7 @@ there.
 
 The standard prefix \\(default: \"substitutions\"\\) comes from
 this variable: `rep-default-substitutions-file-name-prefix'."
-  (if rep-trace (message "%s" "rep-open-substitutions"))
+  (if rep-trace (rep-message (format "%s" "rep-open-substitutions")))
   (interactive)
   (let* ((file-location (file-name-directory (buffer-file-name)))
          (dir (or
@@ -470,7 +516,7 @@ this variable: `rep-default-substitutions-file-name-prefix'."
   "Open a new substitutions file buffer, prompting for the NAME.
 This is an alternate entry-point command, much like
 \\[rep-open-substitutions]."
-  (if rep-trace (message "%s" "rep-open-substitutions-prompt"))
+  (if rep-trace (rep-message (format "%s" "rep-open-substitutions-prompt")))
   (interactive "FName of substitutions file:")
   (rep-open-substitutions-file-buffer-internal name )
   )
@@ -482,24 +528,60 @@ window without being too obnoxious about it.
 This just handles the window management and template insertion.
 Choosing the file name and location is a job for routines such as
 \\[rep-open-substitutions]."
-  (if rep-trace (message "%s" "rep-open-substitutions-file-buffer-internal"))
+  (if rep-trace (rep-message (format "%s" "rep-open-substitutions-file-buffer-internal")))
   (interactive)
   (let* (
+         (apply-desc  ;; C-x#
+          (mapconcat 'key-description
+                     (where-is-internal
+                      'rep-substitutions-apply-to-other-window
+                      rep-substitutions-mode-map
+                      ) ", "))
+         (next-desc ;; TAB, n
+          (mapconcat 'key-description
+                     (where-is-internal
+                      'rep-modified-skip-to-next-change rep-modified-mode-map
+                      ) ", "))
+         (undo-desc ;; u
+          (mapconcat 'key-description
+                     (where-is-internal
+                      'rep-modified-undo-change-here rep-modified-mode-map
+                      ) ", "))
+         (accept-desc ;; A
+          (mapconcat 'key-description
+                     (where-is-internal
+                      'rep-modified-accept-changes rep-modified-mode-map
+                      ) ", "))
+         (revert-desc ;; R
+          (mapconcat 'key-description
+                     (where-is-internal
+                      'rep-modified-revert-all-changes rep-modified-mode-map
+                      ) ", "))
+         (prefix-desc (key-description rep-key-prefix))
+
          (hint
            (concat
            "# Enter s///g; lines, "
-           "/e not allowed /g assumed, "
-           "C-c.r runs on other window"))
+           "/e not allowed /g assumed. "
+           apply-desc
+           " runs on other window"))
          (length-header (length hint))
          (substitution-template "s///g;" )
          start-here
          (hint2
            (concat
-           "# In modififed buffer, the key prefix is 'C-c.':\n"
-           "# Skip to change: C-c.n "
-           "Undo one change: C-C.u "
-           "Accept all: C-c.A "
-           "Revert all: C-c.R "))
+           "# In the modififed buffer, the prefix is "
+           prefix-desc
+           "\n"
+           "# Next change: "
+           next-desc
+           "  Undo: "
+           undo-desc
+           "  Accept all: "
+           accept-desc
+           "  Revert all: "
+           revert-desc
+           ))
          (f-height (frame-height) )
          (w-height (window-body-height) )
          (number-lines 10 )
@@ -547,42 +629,22 @@ that use perl's syntax \(and are interpreted using perl\).
 \\{rep-substitutions-mode-map}"
   (use-local-map rep-substitutions-mode-map))
 
-
-;; TODO
-;; An issue that I don't quite understand:  Using footnote.el as
-;; an example, you'll see that it defines the key prefix for it's
-;; minor-mode using some sort of vector of chars, like the
-;; "rep-key-prefix-internal" here:
-;;
-;; (defcustom rep-key-prefix-internal [(control ?c) ?.]
-;;   "Prefix key to use for the rep-modified-mode minor mode.
-;; This is in the \"internal Emacs key representation\".
-;; The value of this variable is checked as part of loading rep-modififed-mode.
-;; After that, changing the prefix key requires manipulating keymaps."
-;;   )
-;;
-;; The reason for this is apparently some sort of limitation of custom.el.
-;; Since I can't stand custom.el, I'm dropping support for it for now,
-;; and going with a method of specifying keybindings that I understand
-;; better.
-
 (defvar rep-key-prefix (kbd "C-c .")
   "Prefix key to use for the rep-modified-mode minor mode.")
 
+;;(setq rep-modified-mode-map
 (defvar rep-modified-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map "w"
       'rep-modified-what-was-changed-here-verbose)
-    (define-key map "x"
-      'rep-modified-examine-properties-at-point)
     (define-key map "X" 'describe-text-properties)
     (define-key map "u" 'rep-modified-undo-change-here)
     (define-key map "R" 'rep-modified-revert-all-changes)
-    (define-key map "@" 'rep-modified-accept-changes)
     (define-key map "A" 'rep-modified-accept-changes)
     (define-key map "n" 'rep-modified-skip-to-next-change)
     (define-key map "p" 'rep-modified-skip-to-prev-change)
     map))
+;;     (define-key map "@" 'rep-modified-accept-changes)
 
 (defvar rep-modified-minor-mode-map
   (let ((map (make-sparse-keymap)))
@@ -608,7 +670,6 @@ that use perl's syntax \(and are interpreted using perl\).
   :keymap     rep-modified-minor-mode-map
   )
 
-
 (defun rep-define-rep-modified-rebind-tab ()
   "Re-binds the tab (and backtab) key in rep-modified-mode."
   (define-key rep-modified-minor-mode-map [tab]
@@ -619,6 +680,8 @@ that use perl's syntax \(and are interpreted using perl\).
 
 ;;--------
 ;; rep-substitutions-mode function(s)
+
+;; C-x#, code-name: "apply"
 (defun rep-substitutions-apply-to-other-window ()
   "Two buffers must be open, the list of substitution command
 and the file they will modify, with the substitutions window
@@ -626,21 +689,16 @@ selected.  Each substitution command and the changes it produces
 in the other window will be highlighted in corresponding colors.
 Turns off font-lock to avoid conflict with existing syntax coloring."
   (interactive)
-  (if rep-trace (message "%s" "rep-substitutions-apply-to-other-window"))
+  (if rep-trace (rep-message (format "%s" "rep-substitutions-apply-to-other-window")))
   (let ( raw-change-metadata
-         change-metadata
-         changes-list-file
-         changes-list-buffer
-         target-file
-         target-file-buffer
-         backup-file
+         change-metadata changes-list-file   changes-list-buffer
+         target-file     target-file-buffer  backup-file
          )
-
     (setq changes-list-file    (buffer-file-name))
     (setq changes-list-buffer  (current-buffer))
     (save-buffer)
 
-    (other-window 1) ;; cursor in buffer to modify now
+    (other-window 1) ;; now we're in the buffer to modify, the target buffer
     (setq target-file          (buffer-file-name))
     (setq target-file-buffer   (current-buffer))
     (setq backup-file          (rep-generate-backup-file-name target-file))
@@ -650,82 +708,51 @@ Turns off font-lock to avoid conflict with existing syntax coloring."
           (rep-run-perl-substitutions
            changes-list-file target-file backup-file t))
 
-    (if rep-debug
-        (message "raw-change-metadata from rep-run-perl-substitutions: %s"
-                 raw-change-metadata))
+    ;; hack: if there's an odd error message about "find",
+    ;; just strip it out and keep going
+    (cond ((string-match "^find:" raw-change-metadata)
+           (let* ((new-value-1
+                   (replace-regexp-in-string
+                    "^find:[^\n]*"
+                    ""
+                    raw-change-metadata))
+                  (new-value-2
+                   (replace-regexp-in-string
+                    "^Usage:[^\n]*"
+                    ""
+                    new-value-1))
+                  )
+             (setq raw-change-metadata new-value-2)
+             (message "modified: %s" raw-change-metadata)
+           )))
 
     (cond ((not (> (length raw-change-metadata) 1))
            (message "No changes made by substitutions."))
           ((string-match "^Problem" raw-change-metadata) ;; error message
            (message "%s" raw-change-metadata))
-          (t
+          (t ;; so let's do it
            (setq change-metadata
                  (rep-unserialize-change-metadata raw-change-metadata))
 
-           (if rep-debug
-             (message "change-metadata from rep-unserialize-change-metadata: %s"
-                        change-metadata))
+           (rep-modify-target-buffer
+             change-metadata target-file-buffer backup-file)
 
-           (rep-markup-target-buffer-replay-perl-changes
-               change-metadata target-file-buffer backup-file)
            (rep-markup-substitution-lines changes-list-buffer)
 
-           ;; jump to the first change in the modified buffer
-           (let ((spot (next-single-property-change
-                        (point-min)
-                        'rep-last-change target-file-buffer))
-                 )
-             (cond ((not (integer-or-marker-p spot))
-                    (message "No marked-up changes found in buffer."))
+           (set-buffer target-file-buffer)
+           ;; jump to the first unshadowed change in the modified buffer
+           (let* (
+                  (goto t)
+                  (o-ster
+                   (rep-next-top-overlay (point-min) rep-property goto))
+                  )
+             (cond ((overlayp o-ster)
+                    (rep-modified-what-was-changed-here))
                    (t
-                    (goto-char spot)
-                    (rep-modified-what-was-changed-here)
-                    )))
-           )
-          )
-    ))
-
-;; Used by rep-substitutions-apply-to-other-window
-(defun rep-generate-backup-file-name (file)
-  "Given a FILE name, generate a unique backup file name.
-If `rep-standard-backup-location' is non-nil, it will be used
-as the standard location for backups, otherwise, a "e"sb -directory will be used in parallel with the FILE."
-  (interactive)
-  (if rep-trace (message "%s" "rep-generate-backup-file-name"))
-  (let* ((file-location (file-name-directory file))
-         (name          (file-name-nondirectory file))
-         (dir (or
-               rep-standard-backup-location
-               (rep-sub-directory file-location)))
-         (ext "bak")
-         (suffix (rep-generate-random-suffix))
-         (pid (number-to-string (emacs-pid)))
-         (full-file-name (concat dir "/" name "-" pid "-" suffix "." ext))
-         )
-    (while (file-exists-p full-file-name)
-       (setq suffix (rep-generate-random-suffix))
-       (setq full-file-name (concat dir "/" name "-" pid "-" suffix "." ext))
-       )
-    full-file-name))
-
-(defun rep-probe-for-rep-pl ()
-  "Probe the system for the \"rep.pl\" external program.
-Returns t if found, nil otherwise.  As a side-effect, generates a
-warning message if it isn't found."
-  (if rep-trace (message "%s" "rep-probe-for-rep-pl"))
-  (let* (
-         (rep-pl "rep.pl")
-         (cmd    (format "%s --version" (shell-quote-argument rep-pl)))
-         (result (shell-command-to-string cmd))
-         (expected-pat
-          (format "^Running[ ]+%s[ ]+version:" rep-pl))
-         )
-    (cond ((not (string-match expected-pat result))
-           (message "The program %s does not seem to be in your PATH." rep-pl)
-           nil)
-          (t
-           t)
-         )
+                    (message "No marked-up changes found in buffer."))
+                   ))))
+    (if rep-debug
+        (rep-metadata-report))
     ))
 
 ;; Used by rep-substitutions-apply-to-other-window
@@ -737,7 +764,7 @@ unix 's///' style \(perl5 flavor\), one on each line.  The changes
 are made throughout the TARGET-FILE as though the /g modifier was
 used on all of them.  The original file is saved as the given BACKUP-FILE.
 If NO-CHANGES is t, then the TARGET-FILE will not actually be modified."
-  (if rep-trace (message "%s" "rep-run-perl-substitutions"))
+  (if rep-trace (rep-message (format "%s" "rep-run-perl-substitutions")))
   (let* (
          (rep-pl "rep.pl")
          perl-rep-cmd
@@ -761,25 +788,35 @@ If NO-CHANGES is t, then the TARGET-FILE will not actually be modified."
                   changes-list-file)
                 (shell-quote-argument
                   target-file)))
+
     (if rep-debug
-        (message "%s" perl-rep-cmd))
+        (rep-message (format "%s" perl-rep-cmd)))
+
     (setq data (shell-command-to-string perl-rep-cmd))
     (if rep-debug
         (message "%s" data))
     data))
 
 ;; Used by rep-substitutions-apply-to-other-window
-(defun rep-markup-target-buffer-replay-perl-changes (metadata target-buffer
-                                                              backup-file)
+;;   code name "modify"
+(defun rep-modify-target-buffer (metadata target-buffer backup-file)
   "Applies the given change METADATA to the TARGET-BUFFER.
 Highlights the changes using different color faces.
-Sets rep-last-change for each modified region to the record
-number of the METADATA.
-Sets up the rep-change-stack text-property for each modification.
+
+For each modification, this sets the rep-previous-string
+property (indirectly, via the function rep-create-overlay).
+
+The buffer-local vars rep-previous-versions-stack and
+rep-change-metadata are also set by this funciton.
+
 Presumes the target-buffer contains the original, unmodified
-text.
-Requires the METADATA to be in a list-of-alists form."
-  (if rep-trace (message "%s" "rep-markup-target-buffer-replay-perl-changes"))
+text at the outset.
+
+Requires the METADATA to be in an array-of-arrays-of-alists form.
+The inner alist describes each change, each change is in an array
+of changes produced by a pass of a s/// command, and the outer array
+is the collection of effects of the full stack of s/// commands."
+  (if rep-trace (rep-message (format "%s" "rep-modify-target-buffer")))
   (set-buffer target-buffer)
   ;; if font-lock-mode was on in target, save that information
   (setq rep-font-lock-buffer-status font-lock-mode)
@@ -789,225 +826,132 @@ Requires the METADATA to be in a list-of-alists form."
 
   (push backup-file rep-previous-versions-stack)  ;; buffer-local variable
   (setq rep-change-metadata metadata)             ;; buffer-local variable
-  (let ((count (length rep-change-metadata))
-        (i 0)
-        record
-        )
-    (while (<= i (1- count)) ;; stepping forward through change records
-      ;; skip any empty records (if any)
-      (if (setq record (aref rep-change-metadata i))
-          (let* (
-                 (pass   (rep-get 'record 'pass))
-                 (beg    (rep-get 'record 'beg))
-                 (end    (rep-get 'record 'end))     ;; after change
-                 (fin    (rep-adjust-end end beg))
-                 (delta  (rep-get 'record 'delta))
-                 (end1   (- end delta))              ;; before change
-                 (fin1   (rep-adjust-end end1 beg))
-                 (orig   (rep-get 'record 'orig))
-                 (rep    (rep-get 'record 'rep))      ;; NEW
-                 (pre    (rep-get 'record 'pre))      ;; NEW
-                 (post   (rep-get 'record 'post))     ;; NEW
-                 (markup-face (rep-lookup-markup-face pass))
-                 string1
-                 )
-
-            ;; check the substring at beg & end1: make sure it matches orig
-            (setq string1 (buffer-substring-no-properties beg end1))
-            (cond ((not (string= string1 orig))
-                   (message
-                    "Warning: at %d, \"%s\" is not \"%s\"" beg string1 orig)
-                   )
-                  (t
-                   ;; TODO EXTRA CREDIT: try to recover from problems here.
-                   ;; check pre/post values, use them to sync up, in the
-                   ;; event of positioning errors
-                   ;; (robust, defensive programming, or sloppy hackery? You
-                   ;; decide).
-                   )
-                  )
-            ;; delete the old substring, insert rep
-            (setq string1 (buffer-substring beg end1))
-            (delete-region beg end1)
-            (goto-char beg)
-            (insert rep)
-
-            ;; markup: set text-properties face, rep-last-change...
-            (put-text-property beg
-                               end 'face markup-face)
-
-            (put-text-property beg fin 'rep-last-change i) ;; the record number
-
-            ;; push stack with string1 (orig *with* text-properties)
-            (rep-push-change-stack string1 beg end)
-            ))
-      (setq i (1+ i))
-      )
-    ))
-
-(defun rep-push-change-stack (string beg end)
-  "Given the BEG and END of a range, pushes the STRING string onto the stack.
-The stack in this case is the text-property \"rep-change-stack\".
-This operates on the current buffer."
-  (if rep-trace (message "%s" "rep-push-change-stack"))
-  (let* ( stack i fin )
-    ;; we must preserve history of each char, so we must push the
-    ;; stack for each, individually, though we're pushing the same
-    ;; string onto every stack.
-    (setq fin (rep-adjust-end end beg))
-    (setq i beg)
-    (while (<= i fin)
-      (setq stack
-            (get-text-property i
-                               'rep-change-stack))
-      (push string stack)
-      (put-text-property i
-                         (1+ i)
-                         'rep-change-stack stack)
-      (setq i (1+ i))
-      )))
-
-(defun rep-pop-change-stack (beg end)
-  "Given the BEG and END of a range, pops the current state off of the stack.
-If the top of the stack for each character in the range contains the same
-string, it will return that string.  Otherwise, it will refuse to pop, and
-will return nil.
-The stack in this case is the text-property \"rep-change-stack\".
-This operates on the current buffer."
-  (if rep-trace (message "%s" "rep-pop-change-stack"))
-  (let* (
-         (temp-string "")
-         (string "")
-         (stack ())
-         (fin (rep-adjust-end end beg))
-         (temp-list ())
+  (let* ((layer_count (length rep-change-metadata))
+         (pass 0)
+         record
          )
-    ;; peek at top values of stack for all chars, stash in temp-list
-    (let ((i beg))
-      (while (<= i (1- fin))
-        (setq stack
-              (get-text-property i
-                                 'rep-change-stack
-                                ))
-        (setq temp-string
-              (nth 0 stack))
+    ;; step forward through layers of s/// passes...
+    (while (<= pass (1- layer_count)) ;; loop closes with pass++
+      ;; within each pass, step backward through the change records
+      (let* ((layer (aref rep-change-metadata pass) )
+             (i (1- (length layer))))
+        (while (>= i 0)     ;; loop closes with i--
+          (if ;; skip any empty records (if any)
+              (setq record (aref layer i))
+              (let* (
+                     (delta  (rep-get 'record 'delta))
+                     (orig   (rep-get 'record 'orig))     ;; aka find-string
+                     (rep    (rep-get 'record 'rep))      ;; aka replace-string
+                     (beg    (rep-get 'record 'beg))
+                     (end2   (+ beg (length rep)))        ;; after change
 
-        (unless (stringp temp-string)
-          (message "On char %d, not a string: %s" i temp-string))
+                     (end1   (- end2 delta))              ;; before change
 
-        ;; was getting stringp error, when (nth 0 stack) was nil
-        (cond ((stringp temp-string)
-               (setq string
-                     (substring-no-properties temp-string))
+                     (shadowed_changes (rep-get-local-state beg end1))
+                     string1 string1-np overlay
+                     )
+                ;; check the substring at beg & end1: make sure it matches orig
+                (setq string1-np (buffer-substring-no-properties beg end1))
+                (cond ((not (string= string1-np orig))
+                       (rep-message
+                        (format
+                         "Warning: at %d, \"%s\" is not \"%s\"" beg string1 orig)))
+                      )
 
-               (push string temp-list)
-               ))
-        (setq i (1+ i))
+                ;; preserve the shadowed_changes list in the metadata record
+                (rep-set 'record 'shadowed_changes shadowed_changes)
+
+                ;; delete the old substring, insert rep
+                (setq string1 (buffer-substring beg end1))
+                (delete-region beg end1)
+                (goto-char beg)
+                (insert rep)
+
+                ;; put metadata in overlay properties
+                (setq overlay (rep-create-overlay beg end2 string1 pass i ))
+
+                ;; i is used as record number, saved in rep-metadata-record, pass goes in rep-metadata-pass...
+
+                ;; save off the record of metadata in the global stash
+                (aset layer i record)
+                (aset rep-change-metadata pass layer)
+
+                ))   ;; end if/setq/let*
+          (setq i (1- i)) ;; i--
+          ) ;; end while i (inner)
+        ) ;; end let
+      (setq pass (1+ pass)) ;; pass++
+      ) ;; end while
+    )  ;; end let
+  ) ;; end defun
+
+
+(defun rep-get-local-state (beg end)
+  "Get the state of overlays in and around region between BEG and END.
+Finds overlays in the vicinity of the given region, and records
+important aspects that need to be restored in the event that a change
+is undone, notably the beginning and end points of each overlay,
+expressed in relative terms, using BEG as the point of origin.
+Returns a list of alists, with fields keyed by symbols beg, end and
+overlay."
+  (let* ((search-prop  'rep-previous-string)
+         (outreach 1)
+         (raw-overlays (overlays-in
+                         (rep-safe-sum beg (- outreach))
+                         (rep-safe-sum end (+ outreach)))
+                       )
+         (rep-overlays (rep-filter-overlays-by-property raw-overlays search-prop))
+          state
+          )
+    (dolist (overlay rep-overlays)
+      (let* ( (p1 (overlay-start overlay))
+              (p2 (overlay-end   overlay))
+              (relative-p1 (- p1 beg))
+              (relative-p2 (- p2 beg))
+              (record-alist () )
+              )
+        (rep-set 'record-alist 'overlay overlay)
+        (rep-set 'record-alist 'beg relative-p1) ;;TODO beg/end confusing names?
+        (rep-set 'record-alist 'end relative-p2)
+        (push record-alist state)
         ))
-
-    ;; skip unless the top of the stack is same for all chars
-    (cond ((not (rep-all-ok-p temp-list))
-           nil)
-          (t
-           ;; pop stack on each character in range
-           (let ((i beg))
-             (while (<= i (1- fin))
-               (setq stack
-                     (get-text-property i
-                                        'rep-change-stack
-                                        ))
-               (setq string
-                     (pop stack))
-               (put-text-property i
-                                  (1+ i)
-                                  'rep-change-stack
-                                  stack
-                                  )
-               (setq i (1+ i))
-               ))
-           string
-           ))
+    state
     ))
 
-(defun rep-all-ok-p (string-list)
-  "Check that all elements in STRING-LIST are the same string *and* non-nil."
-  (if rep-trace (message "%s" "rep-all-ok-p"))
-  (and (car string-list)
-       (rep-all-equal-p temp-list)
-       ))
+;; Used by:  rep-modify-target-buffer
+;; Note: this is the only place that uses make-overlay
+(defun rep-create-overlay (beg end previous-string pass offset )
+  "Create an overlay with properties reflecting a change.
+BEG and END are the start and end points of the overlay,
+PREV-STRING is the previous version of the text
+\(for \"rep-previous-string\"\) and PASS becomes the overlay
+\"priority\", and is used to choose a \"face\",
+and is also set to \"rep-metadata-pass\".
+OFFSET will be saved as \"rep-metadata-offset\".
+Returns the new overlay object."
+  (let* (
+         (markup-face (rep-lookup-markup-face pass))
+         (overlay (make-overlay beg end (current-buffer) nil t))
+         )
+    (overlay-put overlay 'priority pass)
+    (overlay-put overlay 'face markup-face)
+    (overlay-put overlay 'rep-previous-string previous-string)
+    (overlay-put overlay 'rep-metadata-offset offset)
+    (overlay-put overlay 'rep-metadata-pass pass)
 
-(defun rep-all-equal-p (string-list)
-  "Check that all elements in STRING-LIST are the same string.
-If the list is short, with less than two elements, this will return t,
-declaring them \"all-equal\" by definition."
-  (if rep-trace (message "%s" "rep-all-equal-p"))
-  (let* ((len (length string-list)))
-    (cond ((<= len 1) ;; for 0 or 1 elements, by definition, all are equal
-           t)
-          (t
-           (let* ((check-val (pop string-list)) ;; ref to compare to others
-                  (temp-list (mapcar (function
-                                      (lambda (str)
-                                        (string= str check-val)))
-                                     string-list))
-                  (accum t)
-                  )
-             (dolist (condy temp-list)
-               (setq accum (and accum condy))
-               )
-             accum)))))
-
-;; Used by rep-markup-target-buffer-common
-;;         rep-markup-target-buffer-replay-perl-changes
-(defun rep-adjust-end (end beg)
-  "If END and BEG are equal, returns END plus 1, otherwise just END.
-This is to be used with the markup routines that may need to set a text
-property on a string 0 characters long."
-  (if rep-trace (message "%s" "rep-adjust-end"))
-  (let ((adjusted-end
-         (cond ((= beg end)
-                (1+ end))
-               (t
-                end))))
-    adjusted-end))
-
-;; Used by rep-modified-undo-change-here
-(defun rep-unadjust-end (end beg expected-len)
-  "When END > BEG and yet EXPECTED-LEN is 0, return END minus 1, otherwise END.
-This is used to compensate for when the markup routines need to
-set a text property on a string 0 characters long: we cheat, and
-pretend the string is one char long."
-  (if rep-trace (message "%s" "rep-unadjust-end"))
-  (let ((diff (- end beg))
-        adjusted-end
-        )
-    (setq adjusted-end
-          (cond ((and
-                  (> diff expected-len)
-                  (equal end (1+ beg)))
-                 (1- end))
-                (t
-                 end)
-                ))
-    adjusted-end))
+    (overlay-put overlay 'rep-tag t) ;; used by rep-clear-overlays
+    overlay))
 
 ;; Used by rep-modified-accept-changes
-(defun rep-kick-props (&optional buffer)
+(defun rep-clear-overlays (&optional buffer)
   "Clears the rep.el properties for the entire BUFFER.
 Defaults to current buffer."
-  (if rep-trace (message "%s" "rep-kick-props"))
+  (if rep-trace (rep-message (format "%s" "rep-clear-overlays")))
   (setq buffer-read-only nil)
   (unless buffer
     (setq buffer (current-buffer)))
   (set-buffer buffer)
-  (remove-list-of-text-properties (point-min) (point-max)
-                                  '(rep-last-change
-                                    rep-change-stack
-                                    ))
-  ;; clears *all* face settings.  if you want some, font-lock
-  ;; better put 'em there.  (TODO)
-  (remove-text-properties (point-min) (point-max) '(face nil))
-  )
+  (remove-overlays (point-min) (point-max) 'rep-tag 't))
 
 ;; used by: rep-substitutions-apply-to-other-window
 (defun rep-unserialize-change-metadata (data)
@@ -1015,7 +959,7 @@ Defaults to current buffer."
 That \"raw\" DATA is an aref of hrefs, and it is passed in JSON
 form, so simply using the json package to decode it gets an
 elisp array of alists."
-  (if rep-trace (message "%s" "rep-unserialize-change-metadata"))
+  (if rep-trace (rep-message (format "%s" "rep-unserialize-change-metadata")))
   (let* (change-metadata)
     (cond (data
            (setq change-metadata (json-read-from-string data))
@@ -1035,7 +979,7 @@ Assign a color to each substitution command in the buffer,
 to \\[rep-lookup-markup-face]\).
 Presumes all substitution commands begin with \"s\".
 Acts on the given BUFFER, but leaves the current window active."
-  (if rep-trace (message "%s" "rep-markup-substitution-lines"))
+  (if rep-trace (rep-message (format "%s" "rep-markup-substitution-lines")))
   (save-excursion ;; but that trick *never* works... so don't trust it
     (let* ( (original-buffer (current-buffer))
             (comment_pat  "^\s*?#")
@@ -1072,7 +1016,7 @@ Acts on the given BUFFER, but leaves the current window active."
 ;; Used by: rep-modified-accept-changes, rep-modified-revert-all-changes
 (defun rep-substitutions-mode-p ()
   "Check if the current buffer has the rep-substitutions-mode on."
-  (if rep-trace (message "%s" "rep-substitutions-mode-p"))
+  (if rep-trace (rep-message (format "%s" "rep-substitutions-mode-p")))
   (let* ((this-mode major-mode)
          (mode-name "rep-substitutions-mode")
          )
@@ -1081,13 +1025,14 @@ Acts on the given BUFFER, but leaves the current window active."
 
 
 ;;--------
-;; rep-modified-mode functions
+;; rep-modified-mode functions (all interactive, bound to keys usually)
 
+;; C-c.R
 (defun rep-modified-revert-all-changes ()
   "Revert last substitutions, restoring the previous backup file.
 Uses the `rep-previous-versions-stack' buffer local variable."
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-revert-all-changes"))
+  (if rep-trace (rep-message (format "%s" "rep-modified-revert-all-changes")))
   (let* ( (current-buffer-file-name (buffer-file-name))
           (previous-file (pop rep-previous-versions-stack))
           (preserve-stack rep-previous-versions-stack)
@@ -1100,6 +1045,7 @@ Uses the `rep-previous-versions-stack' buffer local variable."
            (copy-file previous-file current-buffer-file-name t)
            (revert-buffer t t)))
 
+    (rep-clear-overlays)
     ;; covering flakiness in revert-buffer & text properties.
     (font-lock-fontify-buffer)
 
@@ -1116,13 +1062,12 @@ Uses the `rep-previous-versions-stack' buffer local variable."
       )
     ))
 
-;; TODO could write an inverse of this:
-;;     rep-modified-display-changes-again
+;; C-c.A
 (defun rep-modified-accept-changes ()
   "Accept changes made in buffer, return to normal state.
 Restores the standard syntax coloring, etc."
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-accept-changes"))
+  (if rep-trace (rep-message (format "%s" "rep-modified-accept-changes")))
   (let ((file  (buffer-file-name))
         )
     (setq buffer-read-only nil)
@@ -1134,7 +1079,7 @@ Restores the standard syntax coloring, etc."
         (font-lock-fontify-buffer)
         ))
 
-    (rep-kick-props)
+    (rep-clear-overlays)
     (save-buffer)
     ;; also restore cperl syntax colors in substitutions window
     (save-excursion
@@ -1146,281 +1091,784 @@ Restores the standard syntax coloring, etc."
     (message "rep.el: Changes accepted to %s." file)
     ))
 
+;; bound to TAB, code name "next"
 (defun rep-modified-skip-to-next-change ()
-  "Move forward to the next beginning point of a changed region.
-Uses `rep-last-change'."
+  "Skips to next beginning of changed region.
+As written, sends message indicating beginning and end
+of overlay, and the value associated with the property.
+If none are found, emits a generic 'thats all'."
+;; Could there be multiple overlapping overlays in the same place?  Work ok?
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-skip-to-next-change"))
-  (let* ((property 'rep-last-change)
-         (loc (point))
+  (if rep-trace (rep-message (format "%s" "rep-modified-skip-to-next-change")))
+  (let* (
+         (goto-flag t)
+         (big-o
+          (rep-next-top-overlay (point) rep-property goto-flag))
+         beg end val
          )
-    (while (progn
-             (setq loc
-                   (next-single-property-change loc property))
-             (cond ((integer-or-marker-p loc)
-                    (goto-char loc)
-                    (not (rep-modified-at-start-of-changed-region))
-                    );; keep going until at beg edge
-                   (t
-                    (message "No more changed regions after this.")
-                    nil) ;; so exit while loop
-                   )
-             ))
-    (if (integer-or-marker-p loc)
-        (rep-modified-what-was-changed-here))
-    ))
+         (cond ((overlayp big-o)
+                (rep-modified-what-was-changed-here)
+                )
+               (t
+                (message "No futher changed regions.")
+                ))
+         ))
 
+;; bound to BACKTAB by default
 (defun rep-modified-skip-to-prev-change ()
   "Move back to the previous changed region, stopping at the beginning point.
-Uses `rep-last-change'."
+Uses `rep-metadata-record' property."
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-skip-to-prev-change"))
-  (let* ((property 'rep-last-change)
-         (loc (point))
+  (if rep-trace (rep-message (format "%s" "rep-modified-skip-to-prev-change")))
+  (let* (
+         (goto-flag t)
+         (reverse t)
+
+;;          (big-o-spot
+;;           (previous-overlay-change (point)))
+;;          (big-o
+;;           (rep-top-overlay-here big-o-spot rep-property))
+         (big-o
+          (rep-prev-top-overlay (point) rep-property goto-flag))
          )
-    (while (progn
-             (setq loc
-                   (previous-single-property-change loc property))
-             (cond ((integer-or-marker-p loc)
-                    (goto-char loc)
-                    (not (rep-modified-at-start-of-changed-region))
-                    );; keep going until at beg edge
-                   (t
-                    (message "No more changed regions before this.")
-                    nil) ;; so exit while loop
-                   )
-             ))
-    (if (integer-or-marker-p loc)
-        (rep-modified-what-was-changed-here))
+    (cond ((overlayp big-o)
+           (rep-modified-what-was-changed-here)
+           )
+          (t
+           (message "No futher changed regions.")
+           ))
     ))
 
-(defun rep-modified-examine-properties-at-point ()
-  "Tells you all of the text property settings at point.
-This function displays the properties in the message bar,
-as opposed to `describe-text-properties' which opens another
-buffer window for them."
-  (interactive)
-  (if rep-trace (message "%s" "rep-modified-examine-properties-at-point"))
-  (let* (capture)
-    (setq capture (text-properties-at (point)))
-    (message (pp-to-string capture))
-    ))
-
+;; C-c.w
 (defun rep-modified-what-was-changed-here ()
   "Tells you the original string was before it was replaced."
+  ;; uses the rep-previous-string overlay property, but looks up the
+  ;; orig string in metadata: it's always unencumbered by text-properties.
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-what-was-changed-here"))
-  (let* ( (last-change (get-text-property (point) 'rep-last-change))
-          )
-    (cond ((eq rep-change-metadata nil)
-           (message "Problem in %s: rep-change-metadata is nil."
-                    "rep-modified-what-was-changed-here")
-           )
-          (last-change
-           (let* (
-                  (record (aref rep-change-metadata last-change))
-                  (last-string (rep-get 'record 'orig))
-                  )
-             (message "Was: %s" last-string)
-             ))
-          )
-    ))
+  (if rep-trace (rep-message (format "%s" "rep-modified-what-was-changed-here")))
+  (let* (
+          (ova (rep-top-overlay-here (point) rep-property))
+          beg end pass offset record-number orig
+         )
+    (cond (ova
+           (setq beg (overlay-start ova))
+           (setq end (overlay-end   ova))
 
+           (setq pass
+                 (overlay-get ova 'rep-metadata-pass))
+           (setq offset
+                 (overlay-get ova 'rep-metadata-offset))
+
+           (cond ((eq rep-change-metadata nil)
+                  (message "Warning: in %s rep-change-metadata is nil."
+                           "rep-modified-what-was-changed-here")
+                  )
+                 ((and pass offset) ;; could just use t?
+                  (setq orig (rep-metadata-get 'orig pass offset))
+                  (message "Was: %s" orig)
+                  )
+                 )))))
+
+;; Used by rep-modified-what-was-changed-here
+(defun rep-metadata-get (field pass offset)
+  "Gets value of FIELD for PASS and OFFSET from `rep-change-metadata'.
+Example usage, get field \"orig\" for record in pass 3, with offset 4:
+   (rep-metadata-get 'orig 3 4)
+"
+  (let* ((layer   (aref rep-change-metadata pass))
+         (record  (aref layer offset))
+         (value   (rep-get 'record field)))
+    value))
+
+
+
+;; C-c.w
 (defun rep-modified-what-was-changed-here-verbose ()
   "Tells you the original string was before it was replaced.
 Looks at the changed string under the cursor, or if we're not
 inside a change, tries to advance the cursor to the next change.
 This also supplies additional information like the number of the
-substitution that made the change."
+substitution pass that made the change."
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-what-was-changed-here-verbose"))
-  (let* ( (last-change (get-text-property (point) 'rep-last-change))
+  (if rep-trace (rep-message
+                 (format "%s" "rep-modified-what-was-changed-here-verbose")))
+  (let* (
+          (here (point))
+          (ova (rep-top-overlay-here here rep-property))
+          (goto-flag t)
+          last-change beg end
+          pass offset
           )
-    (cond ( (not last-change) ;; we are not yet inside a changed region
-            (goto-char
-             (next-single-property-change (point) 'rep-last-change))
-            (setq last-change (get-text-property (point) 'rep-last-change))
+    (cond ( (not ova) ;; we are not yet inside a changed region
+            (setq ova (rep-next-overlay here rep-property 0 goto-flag))
             ))
-    (cond (last-change
-            (let* (
-                  (record (aref rep-change-metadata last-change))
-                  (last-string (rep-get 'record 'orig))
-                  (pass        (rep-get 'record 'pass))
-                  )
-              (message
-               "This was: %s (changed by the substitution on line: %d)."
-               last-string
-               (1+ pass)
-               )
-              ))
+    (cond ((overlayp ova)
+           (setq pass
+                 (overlay-get ova 'rep-metadata-pass))
+           (setq offset
+                 (overlay-get ova 'rep-metadata-offset))
+
+           (cond ((and pass offset)
+                  (let* (
+                         (layer   (aref rep-change-metadata pass))
+                         (record  (aref layer offset))
+                         (orig   (rep-get 'record 'orig))
+                         )
+                    (message
+                     "This was: %s (changed by substitution number: %d)."
+                     orig
+                     (1+ pass)
+                     )
+                    ))
+                 ))
           (t
            (message "There are no further substitution changes in this buffer.")
            ))
     ))
 
+;; Bound to "u" key, code name "undo"
 (defun rep-modified-undo-change-here ()
   "Undos the individual rep substitution change under the cursor.
 Undos the change at point, or if none is there, warns and does nothing.
 Note that this has nothing to do with the usual emacs \"undo\"
 system, which operates completely independently."
   (interactive)
-  (if rep-trace (message "%s" "rep-modified-undo-change-here"))
-  (let* ((buffer         (current-buffer))
-         (pair           (rep-modified-extent-of-change))
-         (beg            (nth 0 pair))
-         (end            (nth 1 pair))
-         stack
+  (if rep-trace (rep-message (format "%s" "rep-modified-undo-change-here")))
+  (let* (
+         (overlay (rep-top-overlay-here (point) rep-property))
          )
-    (cond ((not (and beg end))
-           (message "No changed region to undo at point.")
+    (cond ((not (overlayp overlay))
+           (message "No change to undo at point.")
            )
           (t
-           (let* ((record-number
-                   (get-text-property beg 'rep-last-change))
+           (let* ((beg (overlay-start overlay))
+                  (end (overlay-end overlay))
 
-                  (record (aref rep-change-metadata record-number))
-                  (pass        (rep-get 'record 'pass))
-                  (delta       (rep-get 'record 'delta))
-                  (orig        (rep-get 'record 'orig))
+                  (existing (buffer-substring-no-properties beg end)) ;; for messaging only
 
-                  (orig-len  (length orig))
-                  (expected-len (+ orig-len delta))
-
-                  (end (rep-unadjust-end end beg expected-len))
-                  (existing (buffer-substring-no-properties beg end))
+                  (pass
+                   (overlay-get overlay 'rep-metadata-pass))
+                  (offset
+                   (overlay-get overlay 'rep-metadata-offset))
+                  (layer  (aref rep-change-metadata pass))
+                  (record (aref layer offset))
+                  (orig             (rep-get 'record 'orig))         ;; for messaging only
+                  (rep              (rep-get 'record 'rep))          ;; for messaging only
+                  (shadowed_changes (rep-get 'record 'shadowed_changes))
                   )
-             (cond ((not (= expected-len (- end beg)))
-                    (message (concat
-                              (format "Can't revert fragment: %s. " existing)
-                              "Must undo adjacent change first." )) )
-                   (t
-                    (let* ((stringy ""))
 
-                      (setq stringy (rep-pop-change-stack beg end))
-                      (delete-region beg end)
-                      (goto-char beg)
-                      (insert stringy)
+             (rep-message (format "undo %s to %s\n" rep orig))
 
-                     (goto-char beg)
-                     (message "Change reverted: %s" existing)
-                     ))))
-           ))))
+             (cond
+              ((setq shadow
+                     (rep-overlay-shadowed-p overlay rep-property))
+               (let* ( ;; all just for messaging
+                      (s-pass
+                       (overlay-get shadow 'rep-metadata-pass))
+                      (s-offset
+                       (overlay-get shadow 'rep-metadata-offset))
+                      (s-layer   (aref rep-change-metadata s-pass))
+                      (s-record  (aref s-layer s-offset))
+                      (s-rep (rep-get 's-record 'rep))
+                      )
+                 (message
+                  "Can't revert fragment: %s. Must undo change of %s first."
+                  existing s-rep)
+                 ))
+              (t
+               (let* ((restore-string
+                       (overlay-get overlay 'rep-previous-string))
+                      )
+                 (if rep-trace (rep-message (concat "restore-string: " (pp restore-string)))) ;; DEBUG
 
-;;--------
-;; utilitites used by other rep-modified-* functions
-
-;; TODO This really belongs in a general package of property utilities
-(defun rep-rising-or-falling-edge (property &optional loc)
-  "Examines PROPERTY at LOC (or point) tells where you are in it's extent.
-Tells if you're at the \"start\", the \"middle\" and/or the \"end\",
-returning the set of results as a list of strings.  Note:
-you can be both at the \"start\" and the \"end\", because
-a region can be one-character long.
-Returns nil if the property is not defined."
-  (if rep-trace (message "%s" "rep-rising-or-falling-edge"))
-  (unless loc
-    (setq loc (point)))
-  (let ((ret ())
-        ;; the property's setting at this point
-        (this (get-text-property loc property))
-        )
-    (cond ((not this) ;; we're not inside a marked region
-           (setq ret nil))
-          (t ;; we are inside
-           ;; first check whether we're at the beginning and/or end of buffer
-           ;; (Note: the buffer might have only one character)
-           (if (and this (eq loc (point-min)))
-               (push "start" ret)
-             )
-           (if (and this (eq loc (point-max)))
-               (push "end" ret)
-             )
-           ;; only if we're not at the top or bottom
-           (cond ((not (or
-                        (eq loc (point-min)) (eq loc (point-max))))
-                  (let* ((prev (get-text-property (1- loc) property))
-                         (next (get-text-property (1+ loc) property))
-                         )
-                    (cond ((and (equal next this) (equal prev this))
-                           (push "middle" ret))
-                          ((not (equal prev this))
-                           (push "start" ret))
-                          ((not (equal next this))
-                           (push "end" ret))
-                          ))))
-           ))
-    ret))
-
-(defun rep-modified-at-start-of-changed-region ()
-  "Returns t if point is at the start of a new rep-last-change regions.
-That means we're at the beginning of a range where the text-property
-rep-last-change is set to some value."
-  (if rep-trace (message "%s" "rep-modified-at-start-of-changed-region"))
-  (let* ((list (rep-rising-or-falling-edge 'rep-last-change))
-         (ret (member "start" list))
-         )
-    ret))
-
-(defun rep-modified-at-end-of-changed-region ()
-  "Returns t if point is at the end of a new rep-last-change regions.
-That means we're at the beginning of a range where the text-property
-rep-last-change is set to some value."
-  (if rep-trace (message "%s" "rep-modified-at-end-of-changed-region"))
-  (let* ((list (rep-rising-or-falling-edge 'rep-last-change))
-         (ret (member "end" list))
-         )
-    ret))
-
-(defun rep-modified-extent-of-change ()
-  "Returns the BEG and END of extent of the change at the cursor.
-This looks for the `rep-last-change' text-property.  If the cursor
-is inside a modified region, this function finds the extent of it.
-Returns a list of the two coordinates (character numbers
-counting from the start of the buffer)."
-  (if rep-trace (message "%s" "rep-modified-extent-of-change"))
-;; The difficulty here is that if we're just at the start of the change,
-;; "previous-single-property-change" wants to skip us way back to the
-;; previous change.  We have to dance around this irritating behavior.
-;; TODO similar problem at end of change?
-  (interactive)
-  (let ( mod beg end peek-back )
-    (setq mod (get-text-property (point) 'rep-last-change))
-    ;; since mod is defined we are inside a changed region..
-    (cond (mod
-           ;;... but we need to worry about being at the start
-           ;; of the change.
-           (setq beg
-                 ;; TODO break-out as rep-move-to-start-of-change
-                 (cond ((rep-modified-at-start-of-changed-region)
-                        (point)
-                        )
-                       (t
-                        (previous-single-property-change (point)
-                                                         'rep-last-change)
-                        )))
-           (setq end
-                 ;; TODO break-out as rep-move-to-end-of-change.  mimic above?
-                 (next-single-property-change (point)
-                                              'rep-last-change))
+                 (delete-region beg end)
+                 (goto-char beg)
+                 (insert restore-string)
                  )
-          ;; any handling of the not-inside-change-case?
-          )
-    (list beg end)))
+               ;; readjust overlays of shadowed changes now revealed after the undo
+               (rep-restore-shadowed-changes-relative-to  beg shadowed_changes)
+
+               ;; disconnect overlay from buffer, we're done with it
+               (delete-overlay overlay)
+
+               (goto-char beg)
+               (message "Change reverted: %s" existing)
+
+               ))))
+          )))
+
+;; Used by rep-modified-undo-change-here
+(defun rep-restore-shadowed-changes-relative-to (origin shadowed_changes)
+  "Resets extents relative to ORIGIN of all overlays in SHADOWED_CHANGES.
+SHADOWED_CHANGES is a list of alists, where each alist is
+keyed by the symbols: overlay, beg, end."
+  (dolist (shadowed_change shadowed_changes)
+    (let* (
+           (shadowlay
+            (rep-get 'shadowed_change 'overlay))
+           (shadowlay-rel-beg
+            (rep-get 'shadowed_change 'beg))
+           (shadowlay-rel-end
+            (rep-get 'shadowed_change 'end))
+           (shadowlay-beg (+ shadowlay-rel-beg origin))
+           (shadowlay-end (+ shadowlay-rel-end origin))
+           )
+      (move-overlay shadowlay shadowlay-beg shadowlay-end)
+      )))
 
 ;;========
-;; general elisp utililities
-;; alist manipulation
+;; local utility functions
 
+;;--------
+;; filename/directory manipulations
+
+;; Used by rep-open-substitutions & rep-generate-backup-file-name
+(defun rep-sub-directory (file-location)
+  "Given a directory, returns path to a '.rep' sub-directory.
+If the sub-directory does not exist, this will create it. "
+  (if rep-trace (rep-message (format "%s" "rep-sub-directory")))
+  (let* ( (dir
+           (substitute-in-file-name
+            (convert-standard-filename
+             (file-name-as-directory
+              (expand-file-name file-location))))) ;; being defensive
+          (standard-subdir-name ".rep")
+          (subdir (concat dir  standard-subdir-name))
+         )
+    (unless (file-directory-p subdir)
+      (make-directory subdir t))
+    subdir))
+
+;; Use by rep-open-substitutions  & rep-generate-backup-file-name
+(defun rep-generate-random-suffix ()
+  "Generate a three character suffix, pseudo-randomly."
+  (if rep-trace (rep-message (format "%s" "rep-generate-random-suffix")))
+  ;; As written, this is always 3 upper-case asci characters.
+  (let (string)
+    (random t)
+    (setq string
+          (concat
+           (format "%c%c%c"
+                   (+ (random 25) 65)
+                   (+ (random 25) 65)
+                   (+ (random 25) 65)
+                   )
+           ))
+    ))
+
+;; Used by rep-substitutions-apply-to-other-window
+(defun rep-generate-backup-file-name (file)
+  "Given a FILE name, generate a unique backup file name.
+If `rep-standard-backup-location' is defined it will be used as
+the standard location for backups, otherwise, a \".rep\"
+subdirectory will be used in parallel with the FILE."
+  (interactive)
+  (if rep-trace (rep-message (format "%s" "rep-generate-backup-file-name")))
+  (let* ((file-location (file-name-directory file))
+         (name          (file-name-nondirectory file))
+         (dir (or
+               rep-standard-backup-location
+               (rep-sub-directory file-location)))
+         (ext "bak")
+         (suffix (rep-generate-random-suffix))
+         (pid (number-to-string (emacs-pid)))
+         (full-file-name (concat dir "/" name "-" pid "-" suffix "." ext))
+         )
+    (while (file-exists-p full-file-name)
+       (setq suffix (rep-generate-random-suffix))
+       (setq full-file-name (concat dir "/" name "-" pid "-" suffix "." ext))
+       )
+    full-file-name))
+
+;;--------
+;; rep debug messages
+
+;; currently unused
+(defun rep-same-string-or-warn (label1 string1 label2 string2)
+  "Compare STRING1 to STRING2 \(string=\) and warn if not the same.
+Uses LABEL1 and LABEL2 in the warning message.
+Example use:
+   \(rep-same-string-or-warn \"label1\" string1 \"label2\" string2\)
+"
+  (cond
+   ((not (string= string1 string2))
+    (rep-message
+     (concat
+      "Warning, not same: "
+      (format
+       "%s: %s, %s: %s\n" label1 string1 label2 string2)
+       ))
+    )))
+
+;; currently unused
+(defun rep-same-number-or-warn (label1 number1 label2 number2)
+  "Compare NUMBER1 to NUMBER2 \(=\) and warn if not the same.
+Uses LABEL1 and LABEL2 in the warning message.
+Example use:
+   \(rep-same-number-or-warn \"label1\" number1 \"label2\" number2\)
+"
+  (cond
+   ((not (= number1 number2))
+    (rep-message
+     (concat
+      "Warning, not same: "
+      (format
+       "%s: %s, %s: %s\n" label1 number1 label2 number2)
+       ))
+    )))
+
+
+;;--------
+;; rep debug utilities
+
+(defun rep-message (message)
+  "Output given string MESSAGE to the *Rep* buffer.
+Does nothing unless the `rep-debug' variable is set.
+Unlike the built-in \\[message], this does not do an implicit format."
+;; Example usage:
+;;  (if rep-trace (rep-message (format "%s" "rep-generate-backup-file-name")))
+;;
+  (cond (rep-debug
+         (let* ( (display-buffer (get-buffer-create "*Rep*"))
+                 (start-buffer   (current-buffer))
+                 )
+           (set-buffer display-buffer)
+           (goto-char (point-max))
+           (insert message)
+           (goto-char (point-max))
+           (set-buffer start-buffer)
+           ))))
+
+
+;;========
+;; general utililities
+
+;;--------
+;; overlay utilities
+
+   ;; TODO move/copy overlay utilities to their own general-purpose package(s):
+   ;;   ol-ut.el or overlay-util.el
+
+(defun rep-overlays-here (&optional spot)
+  "Return a list of overlays at one point in the buffer.
+If SPOT is not given, lists the overlays at point.  This is a
+variant of \\[overlays-in] and \\[overlays-at] that gathers both
+zero-width overlays and the wider ones at a location found by
+doing a \\[next-overlay-change]."
+  (interactive) ;; debug
+  (let (
+        (spot (or spot (point)))
+        (o-list
+         (append
+          (overlays-in spot spot)  ;; finds zero-width overlays
+          (overlays-at spot)       ;; finds wider overlays
+          ;; (overlays-in (1+ spot) (1+ spot)) ;; also finds wider overlays
+          ))
+        )
+    o-list))
+
+;; TODO would be more convienient if this were a no-op when property is nil
+;; Used by: rep-next-overlay, rep-top-overlay-here
+(defun rep-filter-overlays-by-property (overlay-list property)
+  "Given an OVERLAY-LIST selects only the ones matching PROPERTY.
+Returns the filtered list."
+  (let ( overlay p hit-list )
+    (dolist (overlay overlay-list)
+      (setq p-list (overlay-properties overlay))
+      (dolist (p p-list)
+        (cond( (equal p property)
+               (push overlay hit-list)
+               ))
+        ))
+    hit-list))
+
+;; Used by: rep-next-overlay
+(defun rep-filter-overlays-priority (overlay-list priority)
+  "Given an OVERLAY-LIST selects only the ones greater than PRIORITY.
+Returns the filtered list."
+  (let* ((cutoff priority)
+         overlay p hit-list prior)
+    (dolist (overlay overlay-list)
+        (cond( (>= (overlay-get overlay 'priority) cutoff)
+               (push overlay hit-list)
+               )))
+    hit-list))
+
+;; unused
+(defun rep-at-overlay-leading-edge-p (overlay &optional spot)
+  "Returns t if point is at the start of the given OVERLAY.
+If SPOT is given, checks that location rather than point.
+If OVERLAY is not actually an overlay, will return nil."
+;; Note: doesn't verify that overlay has not been removed
+;; in the meantime, correct?
+  (cond ((overlayp overlay)
+         (let* ((spot (or spot (point)))
+                (beg (overlay-start overlay))
+                )
+           (= spot beg)
+           )
+         (t
+          nil))))
+
+;; unused
+(defun rep-at-overlay-trailing-edge-p (overlay &optional spot)
+  "Returns t if point is at the start of the given OVERLAY.
+If SPOT is given, checks that location rather than point."
+;; TODO if not at an overlay at all, should also return nil, correct?
+;; TODO is there a misconception here? I think "trailing-edge"
+;; of overlay might be thought of as the location right after
+;; it's end.  Where does next-overlay-change leave you?
+  (let* ((spot (or spot (point)))
+         (end (overlay-end overlay))
+         )
+         (= spot end)
+         ))
+
+(defun rep-sort-overlays-on-priority (o-list)
+  "Given a list of overlays, sort them on priority.
+Returns a sorted list in descending order, with the maximum
+at the top."
+  ;; so if not given valid overlays, it doesn't error out (zat good?)
+  (let ( new-o-list
+         )
+    (setq new-o-list
+          (sort o-list
+                '(lambda (a b)
+                  (let ((pa (cond ((overlayp a)
+                                   (overlay-get a 'priority))
+                                  ))
+                        (pb (cond ((overlayp a)
+                                   (overlay-get b 'priority))
+                                  ))
+                        )
+                    (> pa pb)  ;; descending order, max at the top
+                    ))))
+    new-o-list))
+
+;; TODO improve efficiency (no need to sort all to get a maximum)
+;;      (used by many routines here)
+(defun rep-max-priority-overlay (o-list)
+  "Given a list of overlays, returns the one with maximum priority."
+  (car (rep-sort-overlays-on-priority o-list)))
+
+
+;; Directly used by:
+;;          rep-next-top-overlay
+;;          rep-overlay-shadowed-p
+;;          rep-modified-what-was-changed-here-verbose
+;; Indirectly used by: rep-modified-skip-to-next-change
+;;                     rep-substitutions-apply-to-other-window
+(defun rep-next-overlay (&optional position property priority-cutoff goto-flag)
+  "Looks for the leading edges of overlays following POSITION.
+POSITION defaults to point. Works in the current buffer.
+
+If PROPERTY is given, it will search for the first overlay(s)
+with that PROPERTY.
+If PRIORITY-CUTOFF is given, it will ignore any overlays that
+do not have a higher or equal priority.
+
+If more than one qualifying overlays begin at the same place,
+returns the overlay with maximum priority, or nil if none are
+found.
+
+If the GOTO-FLAG is t, it will also move to the start of
+the overlay."
+  (let* ( (spot (or position (point)))
+          (save-point-a (point))
+          (priority priority-cutoff)
+          o-list overlay
+          )
+    ;; repeat peek ahead looking for overlays that qualify,
+    ;; i.e. that have property and exceed priority cutoff
+    (while (not (progn  ;; repeat-until
+                  (setq o-list
+                        (rep-next-raw-overlays spot t)) ;; goto flag on
+                  ;; restrict by property &/or priority
+                  (if property
+                      (setq o-list (rep-filter-overlays-by-property o-list property)))
+                  (if priority
+                      (setq
+                       o-list (rep-filter-overlays-priority o-list priority)))
+                  ;; get set for next interation (if any)
+                  (setq spot (point))
+                  ;; exit if found some meeting criteria, or hit the EOB
+                  (or
+                   o-list
+                   (= (point) (point-max)) )
+                  )))
+    ;; get the max (might be more than one)
+    (setq overlay (rep-max-priority-overlay o-list))
+    (cond ((and goto-flag
+                (overlayp overlay))
+           (goto-char (overlay-start overlay))
+           )
+          (t
+           (goto-char save-point-a)))
+  overlay))
+
+(defun rep-prev-overlay (&optional position property priority-cutoff goto-flag)
+  "Looks for the leading edges of overlays before POSITION.
+POSITION defaults to point. Works in the current buffer.
+
+If PROPERTY is given, it will search for the first overlay(s)
+with that PROPERTY.
+
+If PRIORITY-CUTOFF is given, it will ignore any overlays that
+do not have a higher or equal priority.
+
+If more than one qualifying overlays begin at the same place,
+returns the overlay with maximum priority, or nil if none are
+found.
+
+If the GOTO-FLAG is t, it will also move to the start of
+the overlay."
+  (let* ( (spot (or position (point)))
+          (save-point-a (point))
+          (priority priority-cutoff)
+          o-list overlay
+          )
+    ;; repeat peek back looking for overlays that qualify,
+    ;; i.e. that have property and exceed priority cutoff
+    (while (not (progn  ;; repeat-until
+                  (setq o-list
+                        (rep-prev-raw-overlays spot t)) ;; need to goto
+                  ;; restrict by property &/or priority
+                  (if property
+                      (setq o-list (rep-filter-overlays-by-property o-list property)))
+                  (if priority
+                      (setq
+                       o-list (rep-filter-overlays-priority o-list priority)))
+                  ;; get set for next interation (if any)
+                  (setq spot (point))
+                  ;; exit if found some meeting criteria, or hit the BOB
+                  (or
+                   o-list
+                   (= (point) (point-min)) )
+                  )))
+    ;; get the max (might be more than one)
+    (setq overlay (rep-max-priority-overlay o-list))
+    (cond ((and goto-flag
+                (overlayp overlay))
+           (goto-char (overlay-start overlay))
+           )
+          (t
+           (goto-char save-point-a)))
+  overlay))
+
+
+(defun rep-next-raw-overlays (&optional position goto-flag)
+  "Searches for any overlays after POSITION, which defaults to point.
+If GOTO-FLAG is set, it will move to the location.
+Returns a list of overlays found \(there can be more than one
+at the same position\)."
+  (let* (
+         (spot (or position (point)))
+         (save-point-b (point))
+         o-list
+         raw-list
+         )
+    ;; next-overlay-change stops at leading and trailing edges.
+    ;; So if we turn up no overlays with it, it could
+    ;; be we're at the trailing edge, so we try again.
+    (while  ;; repeat-until
+        (not
+         (progn
+           (setq spot (next-overlay-change spot))
+           (goto-char spot)
+           (setq o-list
+                 (rep-overlays-here spot))
+           (or                    ;; exit if...
+            o-list                ;;   found something
+            (= spot (point-max))) ;;   hit EOB
+           )
+         )
+      )
+    (if o-list
+        (setq raw-list o-list))
+    (unless goto-flag
+      (goto-char save-point-b))
+    raw-list))
+
+;; Used by: rep-prev-overlay
+(defun rep-prev-raw-overlays (&optional position goto-flag)
+  "Searches for any overlays before POSITION, which defaults to point.
+If GOTO-FLAG is set, it will move to the location.
+Returns a list of overlays found \(there can be more than one
+at the same position\)."
+  (let* (
+         (spot (or position (point)))
+         (save-point-b (point))
+         o-list
+         raw-list
+         )
+    ;; previous-overlay-change stops at leading and trailing edges.
+    ;; So if we turn up no overlays with it, it could
+    ;; be we're at the trailing edge, so we try again.
+    (while  ;; repeat-until
+        (not
+         (progn
+           (setq spot (previous-overlay-change spot))
+           (goto-char spot)
+           (setq o-list
+                 (rep-overlays-here spot))
+           (or                    ;; exit if...
+            o-list                ;;   found something
+            (= spot (point-min))) ;;   hit BOB
+           )
+         )
+      )
+    (if o-list
+        (setq raw-list o-list))
+    (unless goto-flag
+      (goto-char save-point-b))
+    raw-list))
+
+
+(defun rep-top-overlay-here (&optional position property)
+  "Returns the top overlay active at the given position, in the current buffer.
+A \"top\" overlay is \"unshadowed\", i.e. there is no overlapping
+overlay of higher priority.  If POSITION is not given, it looks
+at point, if PROPERTY is given, it looks for an overlay with that
+PROPERTY. Returns nil, if there's no such overlay."
+  (let* ((spot (or position (point)))
+         (save-point-c (point))
+         next-overlay
+         next-overlay-beg
+         found
+         candidate
+         beg end priority
+          )
+    (setq candidate
+          (rep-max-priority-overlay
+           (rep-filter-overlays-by-property (rep-overlays-here spot) property)))
+    (cond (candidate
+           (setq beg      (overlay-start candidate))
+           (setq end      (overlay-end   candidate))
+           (setq priority (overlay-get   candidate 'priority))
+           (setq next-higher-overlay
+                 (rep-next-overlay spot property (1+ priority)))
+           (cond (next-higher-overlay
+                  (setq next-higher-beg
+                        (overlay-start next-higher-overlay))
+                  (setq found (cond ((<= next-higher-beg end)
+                                     next-higher-overlay)
+                                    (t
+                                     candidate
+                                     )))
+                  )
+                 (t
+                  (setq found candidate)))
+           ))
+    (goto-char save-point-c)
+    found))
+
+;; used by: rep-modified-skip-to-next-change (aka "next" or TAB )
+(defun rep-next-top-overlay (&optional position property goto-flag)
+  "Find immediately next top level overlay.
+Begins looking at point unless POSITION is given.
+If PROPERTY is given, only looks for overlays with that property.
+If GOTO-FLAG is on, also moves to the location.
+Returns the location found, or nil if none."
+  (let* ((spot (or position (point)))
+         (start-point (point))
+         (goto-flag t)
+         candidate candidate-spot shadow found beg end priority shadow-beg
+         )
+
+    (while  ;; repeat-until
+        (not
+         (progn
+           (setq spot (next-overlay-change spot))
+           (setq spot (rep-safe-sum spot +1)) ;; we go forward for "next": +
+           ;; Note any "top overlay" is *unshadowed* by definition
+           (setq candidate
+                 (rep-top-overlay-here spot rep-property))
+           (cond (candidate
+                  (setq spot (overlay-start candidate))
+                  (setq found candidate)
+                  ))
+           (cond ((= spot (point-max))    ;; at EOB, so exit
+                  t)
+                 (found                      ;; found something, so exit
+                  found)
+                 )
+           )))
+    (if goto-flag
+        (goto-char spot))
+    found))
+
+;; Used by: rep-modified-skip-to-prev-change (aka BACKTAB)
+(defun rep-prev-top-overlay (&optional position property goto-flag)
+  "Find immediately previous top level overlay.
+Begins looking at point unless POSITION is given.
+If PROPERTY is given, only looks for overlays with that property.
+If GOTO-FLAG is on, also moves to the location.
+Returns the location found, or nil if none."
+  (let* ((spot (or position (point)))
+         (start-point (point))
+         (goto-flag t)
+         candidate candidate-spot shadow found beg end priority shadow-beg
+         )
+    (while  ;; repeat-until
+        (not
+         (progn
+           (setq spot (previous-overlay-change spot))
+           (setq spot (rep-safe-sum spot -1))
+           ;; Note any "top overlay" is *unshadowed* by definition
+           (setq candidate
+                 (rep-top-overlay-here spot rep-property))
+           (cond (candidate
+                  (setq spot (overlay-start candidate))
+                  (setq found candidate)
+                  ))
+           (cond ((= spot (point-min))    ;; at BOB, so exit
+                  t)
+                 (found                      ;; found something, so exit
+                  found)
+                 )
+           )))
+    (if goto-flag
+        (goto-char spot))
+    found))
+
+;; Used by: rep-prev-top-overlay, rep-modified-undo-change-here
+(defun rep-overlay-shadowed-p (overlay &optional tag-property)
+  "Is OVERLAY shadowed (and not a top overlay)?
+With TAG-PROPERTY, only considers overlays that contain that tag.
+Returns the shadowing overlay, if one is found, nil otherwise."
+  (save-excursion ;; pleeeease preserve point.  thank you.
+    (let* ((beg (overlay-start overlay))
+           (end (overlay-end   overlay))
+           (priority (overlay-get overlay 'priority))
+           (over-overlay (rep-next-overlay beg tag-property
+                                           (1+ priority)
+                                           nil))
+           ;;                                         ;; nil => goto-flag is off
+           shadow dark-beg
+           )
+      (cond (over-overlay
+             (setq dark-beg      (overlay-start over-overlay))
+             ))
+      ;; if found a higher overlay that starts before the end of
+      ;; the given one, it's a shadow
+      (cond ((and over-overlay (<= dark-beg end))
+             (setq shadow over-overlay)))
+      shadow
+      )))
+
+;;--------
+;; alist manipulation utilities
+
+;; Used a lot here!
 (defun rep-get (alist-symbol key)
   "Look up value for given KEY in ALIST.
 Example:
-   (rep-get 'rep-general-alist 'C)
-Note: must quote alist name."
-  (if rep-trace (message "%s" "rep-get"))
+   (rep-get 'rep-general-alist 'field)
+Note: must quote alist name and key."
+  (if rep-trace (rep-message (format "%s" "rep-get")))
   (let* ((value (cdr (assoc key (eval alist-symbol))))
          )
-
-    ;; blatant hackery... sometimes it's car/cdr, sometimes just cdr.
+    ;; hack! Sometimes need car/cdr, sometimes just cdr, who knows why.
     (setq value
           (cond ((listp value)
                  (car value)
@@ -1429,8 +1877,7 @@ Note: must quote alist name."
                  value
                  )))
 
-    ;; automatic conversion of numeric strings to numbers
-    ;; (dammit, I'm a perl programmer!)
+    ;; automatic conversion of numeric strings to numbers (yes, i like perl)
     (cond ((not (stringp value))
            value)
           ((string-match "^[-+.0-9]+$" value)
@@ -1446,24 +1893,88 @@ Note: must quote alist name."
 Example:
    (rep-set 'rep-general-alist 'C \"CCC\")
 Note: must quote alist name."
-  (if rep-trace (message "%s" "rep-set"))
+  (if rep-trace (rep-message (format "%s" "rep-set")))
   (set alist-symbol (cons (list key value) (eval alist-symbol)))
   )
+
+;;--------
+;; buffer location coordinate utilities
+
+(defun rep-safe-sum (here try-reach)
+  "Starting from HERE, tries to add TRY-REACH, but does not exceed boundaries.
+If HERE plus TRY-REACH exceeds the min or max, returns the min or max,
+otherwise just returns the sum.  Note that TRY-REACH can be a negative
+number.
+
+This is intended to be used to write safe peek-ahead or peek-behind
+code that will not error-out when near buffer boundaries."
+  (let* (
+         (min  (point-min))
+         (max  (point-max))
+         (sum (+ here try-reach))
+         there
+         )
+    (cond ((< sum min)
+           (setq there min)
+           )
+          ((> sum max)
+           (setq there max)
+           )
+          (t
+           (setq there sum)
+           ))
+    there))
+
+;;--------
+;; safe buffer substring
+(defun rep-buffer-string-before (here &optional chunk-size)
+  "Tries to get a substring before HERE of size CHUNK-SIZE \(default: 10\).
+If too close to the beginning of the buffer, returns as many characters
+as it can \(without signalling an error\). No properties are
+included in the substring.  HERE is taken as point when run
+interactively."
+  (interactive "d")
+  (let* ((chunk-size (or chunk-size 8))
+;;         (here (point))
+         (min  (point-min))
+         (there (- here chunk-size))
+         string
+         )
+    (cond ((< there min)
+           (setq there min)
+           ))
+    ;; step back ten chars, get string
+    (setq string (buffer-substring-no-properties there here))
+
+    (message "||%s||" string)
+    string
+    ))
+
+(defun rep-buffer-string-after (here &optional chunk-size)
+  "Tries to get a substring after HERE of size CHUNK-SIZE \(default: 10\).
+If too close to the end of the buffer, returns as many characters
+as it can \(without signalling an error\). No properties are
+included in the substring.  HERE is taken as point when run
+interactively."
+  (interactive "d")
+  (let* ((chunk-size (or chunk-size 8))
+;;         (here (point))
+         (max  (point-max))
+         (there (+ here chunk-size))
+         string
+         )
+    (cond ((> there max)
+           (setq there max)
+           ))
+    ;; step back ten chars, get string
+    (setq string (buffer-substring-no-properties there here))
+
+    (message "||%s||" string)
+    string
+    ))
 
 ;;========
 ;; debug tools
 
-(defun rep-modified-select-change ()
-  "Selects the changed region at point."
-  (interactive)
-  (if rep-trace (message "%s" "rep-modified-select-change"))
-  (let* ((pair (rep-modified-extent-of-change))
-         (beg (nth 0 pair))
-         (end (nth 1 pair)))
-    (goto-char beg)
-    (set-mark beg)
-    (goto-char end)
-    (exchange-point-and-mark)
-    ))
 
 ;;; rep.el ends here

@@ -6,7 +6,7 @@ use warnings;
 use strict;
 $|=1;
 my $DEBUG = 0;             # TODO set to 0 before ship
-use Data::Dumper::Perltidy;
+use Data::Dumper;
 
 use Test::More;
 BEGIN { plan tests => 4 };

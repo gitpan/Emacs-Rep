@@ -92,7 +92,7 @@ use FindBin qw( $Bin );
 use Emacs::Rep     qw( :all );
 use JSON; # encode_json
 
-our $VERSION = 0.08;
+our $VERSION = 1.00;
 my  $prog    = basename($0);
 
 my $DEBUG   = 0;                 # TODO set default to 0 when in production

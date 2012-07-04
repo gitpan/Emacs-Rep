@@ -2,6 +2,7 @@ Build.PL
 Changes
 MANIFEST
 README
+TODO
 lib/Emacs/Rep.pm
 script/rep.pl
 elisp/rep.el

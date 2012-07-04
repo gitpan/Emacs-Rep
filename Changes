@@ -75,3 +75,26 @@ Revision history for Emacs-Rep
         change (meaning a whole change unshadowed by any later
         one).  This implementation is completely different from
         the one mentioned above for version 0.05.
+
+0.09  Tue Jun 26 09:47:31 2012
+
+      Fixed TAB and BACKTAB features to find deletions (zero-width
+      regions), now handles multiple adjacent deltions sensible
+      (regards them all as in the same place, and the last one
+      made is "on top" and visible to the rep-undo command).
+
+      Added TODO file to the distribution.
+
+1.00  Wed Jul  4 12:34:38 2012
+
+      Further improvements to TAB/BACKTAB to handle corner cases
+      (nested, overlapping changes to changes, etc).
+
+      Cleaned-up rep.el code somewhat, removing some redundant
+      features, explicitly checking for nil values (rather than
+      letting the emacs code crash with myserious overlayp errors).
+
+      This application now has no known bugs (though it is
+      not yet tested with the new GNU emacs 24 release),
+      hence the jump to 1.0.
+

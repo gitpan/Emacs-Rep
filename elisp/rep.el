@@ -72,7 +72,7 @@
 ;; small window suitable for entering a series of perl substitution
 ;; commands, typically of the form: "s/<find_pattern>/<replace_string>/g;".
 
-;; When you're ready, "C-c.R" will run these substitutions on the
+;; When you're ready, "C-x #" will run these substitutions on the
 ;; other window.
 
 ;; The usual font-lock syntax coloring will be temporarily
@@ -105,7 +105,7 @@
 ;;              and get your normal syntax coloring back.
 
 ;;  Note that the *.rep files you create with C-c.S can be run again
-;;  on other files.  This should simplify making similar changes to
+;;  on other files.  This can simplify making similar changes to
 ;;  a large number of files.
 
 ;; For more information:
@@ -134,7 +134,7 @@
 ;;---------
 ;;  User Options, Variables
 
-(defvar rep-version "0.08"
+(defvar rep-version "1.00"
  "Version number of the rep.el elisp file.
 This version should match the versions of
 the rep.pl script and the Rep.pm \(Emacs::Rep\)
@@ -205,8 +205,9 @@ The fields in each alist:
 (make-variable-buffer-local 'rep-change-metadata)
 (put 'rep-change-metadata 'risky-local-variable t)
 
-(defvar rep-property 'rep-previous-string
+(defvar rep-property 'rep-metadata-offset
   "A property that we guarantee will be present in any rep.el overlay.")
+;; (setq rep-property 'rep-metadata-offset)
 
 ;; =======
 ;; documentation variables (used just for places to attach docstrings)
@@ -217,28 +218,23 @@ the \\[remove-overlays] function can find them easily.  This
 proerties value is always set to t: according to the
 documentation, remove-overlays can't identify overlays solely by
 property, it needs to know the value of the property also.
+
 This var is just a place to attach a docstring for this property.
 ")
 
 (defvar rep-metadata-pass nil
   "The overlay property rep-metadata-pass contains the index for the outer
 array of the array-of-arrays-of-alists `rep-change-metadata'.
+
 This var is just a place to attach a docstring for this property.
 ")
 
 (defvar rep-metadata-offset nil
   "The overlay property rep-metadata-pass contains the index for the inner
 array of the array-of-arrays-of-alists `rep-change-metadata'.
+
 This var is just a place to attach a docstring for this property.
 ")
-
-
-(defvar rep-previous-string nil
-  "The overlay property rep-previous-string contains a copy of the
-text before it was modified.
-This var is just a place to attach a docstring for this property.
-")
-
 
 ;;--------
 ;; colorized faces used to mark-up changes
@@ -803,11 +799,11 @@ If NO-CHANGES is t, then the TARGET-FILE will not actually be modified."
   "Applies the given change METADATA to the TARGET-BUFFER.
 Highlights the changes using different color faces.
 
-For each modification, this sets the rep-previous-string
-property (indirectly, via the function rep-create-overlay).
-
-The buffer-local vars rep-previous-versions-stack and
-rep-change-metadata are also set by this funciton.
+For each modification, the buffer-local vars
+rep-previous-versions-stack and rep-change-metadata are set by
+this function, and the the overlay properties rep-metadata-pass
+and rep-metadata-offset are set (indirectly, via the function
+rep-create-overlay).
 
 Presumes the target-buffer contains the original, unmodified
 text at the outset.
@@ -867,12 +863,11 @@ is the collection of effects of the full stack of s/// commands."
                 (goto-char beg)
                 (insert rep)
 
-                ;; put metadata in overlay properties
-                (setq overlay (rep-create-overlay beg end2 string1 pass i ))
+                ;; put metadata in overlay properties:
+                ;;   i => rep-metadata-record, pass => rep-metadata-pass
+                (setq overlay (rep-create-overlay beg end2 pass i ))
 
-                ;; i is used as record number, saved in rep-metadata-record, pass goes in rep-metadata-pass...
-
-                ;; save off the record of metadata in the global stash
+                ;; save the record of metadata in the global stash
                 (aset layer i record)
                 (aset rep-change-metadata pass layer)
 
@@ -894,7 +889,8 @@ is undone, notably the beginning and end points of each overlay,
 expressed in relative terms, using BEG as the point of origin.
 Returns a list of alists, with fields keyed by symbols beg, end and
 overlay."
-  (let* ((search-prop  'rep-previous-string)
+  (let* (
+         (search-prop  rep-property)
          (outreach 1)
          (raw-overlays (overlays-in
                          (rep-safe-sum beg (- outreach))
@@ -920,22 +916,22 @@ overlay."
 
 ;; Used by:  rep-modify-target-buffer
 ;; Note: this is the only place that uses make-overlay
-(defun rep-create-overlay (beg end previous-string pass offset )
+;; TODO we could skip passing "previous-string" since it can
+;; be looked up from rep-change-metadata using pass and offset (orig).
+(defun rep-create-overlay (beg end pass offset )
+                                                  ;; previous-string )
   "Create an overlay with properties reflecting a change.
 BEG and END are the start and end points of the overlay,
-PREV-STRING is the previous version of the text
-\(for \"rep-previous-string\"\) and PASS becomes the overlay
-\"priority\", and is used to choose a \"face\",
-and is also set to \"rep-metadata-pass\".
-OFFSET will be saved as \"rep-metadata-offset\".
-Returns the new overlay object."
+PREV-STRING is the previous version of the text. PASS becomes
+the overlay \"priority\", and is used to choose a \"face\", and
+is also set to \"rep-metadata-pass\".  OFFSET will be saved as
+\"rep-metadata-offset\".  Returns the new overlay object."
   (let* (
          (markup-face (rep-lookup-markup-face pass))
          (overlay (make-overlay beg end (current-buffer) nil t))
          )
     (overlay-put overlay 'priority pass)
     (overlay-put overlay 'face markup-face)
-    (overlay-put overlay 'rep-previous-string previous-string)
     (overlay-put overlay 'rep-metadata-offset offset)
     (overlay-put overlay 'rep-metadata-pass pass)
 
@@ -1123,11 +1119,6 @@ Uses `rep-metadata-record' property."
   (let* (
          (goto-flag t)
          (reverse t)
-
-;;          (big-o-spot
-;;           (previous-overlay-change (point)))
-;;          (big-o
-;;           (rep-top-overlay-here big-o-spot rep-property))
          (big-o
           (rep-prev-top-overlay (point) rep-property goto-flag))
          )
@@ -1142,9 +1133,7 @@ Uses `rep-metadata-record' property."
 ;; C-c.w
 (defun rep-modified-what-was-changed-here ()
   "Tells you the original string was before it was replaced."
-  ;; uses the rep-previous-string overlay property, but looks up the
-  ;; orig string in metadata: it's always unencumbered by text-properties.
-  (interactive)
+  ;; looks up the orig string in metadata
   (if rep-trace (rep-message (format "%s" "rep-modified-what-was-changed-here")))
   (let* (
           (ova (rep-top-overlay-here (point) rep-property))
@@ -1163,32 +1152,23 @@ Uses `rep-metadata-record' property."
                   (message "Warning: in %s rep-change-metadata is nil."
                            "rep-modified-what-was-changed-here")
                   )
-                 ((and pass offset) ;; could just use t?
+                 ((and pass offset)
                   (setq orig (rep-metadata-get 'orig pass offset))
                   (message "Was: %s" orig)
-                  )
+                  ) ;; any t condition?  warn: "something weird"
                  )))))
 
-;; Used by rep-modified-what-was-changed-here
-(defun rep-metadata-get (field pass offset)
-  "Gets value of FIELD for PASS and OFFSET from `rep-change-metadata'.
-Example usage, get field \"orig\" for record in pass 3, with offset 4:
-   (rep-metadata-get 'orig 3 4)
-"
-  (let* ((layer   (aref rep-change-metadata pass))
-         (record  (aref layer offset))
-         (value   (rep-get 'record field)))
-    value))
-
-
-
-;; C-c.w
+;; C-c.w  code name: "what"
+;; Not used by any other functions: see rep-modified-what-was-changed-here
 (defun rep-modified-what-was-changed-here-verbose ()
   "Tells you the original string was before it was replaced.
 Looks at the changed string under the cursor, or if we're not
 inside a change, tries to advance the cursor to the next change.
 This also supplies additional information like the number of the
 substitution pass that made the change."
+;; Note it might've be more consistent to just message that there's nothing there.
+;; but it's more convienient to skip ahead, and this is a top-level
+;; interactive routine not used by other code.
   (interactive)
   (if rep-trace (rep-message
                  (format "%s" "rep-modified-what-was-changed-here-verbose")))
@@ -1199,20 +1179,23 @@ substitution pass that made the change."
           last-change beg end
           pass offset
           )
-    (cond ( (not ova) ;; we are not yet inside a changed region
-            (setq ova (rep-next-overlay here rep-property 0 goto-flag))
-            ))
+
+     (cond ( (not ova) ;; we are not yet inside a changed region
+             ;; This jumps to the next change, rather than look just "here"
+             (setq ova (rep-next-overlay here rep-property 0 goto-flag))
+             ))
     (cond ((overlayp ova)
+           ;; pass is used to lookup record *and* in messaging (so stet!)
            (setq pass
                  (overlay-get ova 'rep-metadata-pass))
            (setq offset
                  (overlay-get ova 'rep-metadata-offset))
-
            (cond ((and pass offset)
                   (let* (
                          (layer   (aref rep-change-metadata pass))
                          (record  (aref layer offset))
-                         (orig   (rep-get 'record 'orig))
+                         (orig    (rep-get 'record 'orig))
+                         ;; Note: hold open door to more info from record for messaging
                          )
                     (message
                      "This was: %s (changed by substitution number: %d)."
@@ -1225,6 +1208,7 @@ substitution pass that made the change."
            (message "There are no further substitution changes in this buffer.")
            ))
     ))
+
 
 ;; Bound to "u" key, code name "undo"
 (defun rep-modified-undo-change-here ()
@@ -1244,43 +1228,36 @@ system, which operates completely independently."
            (let* ((beg (overlay-start overlay))
                   (end (overlay-end overlay))
 
-                  (existing (buffer-substring-no-properties beg end)) ;; for messaging only
+                  (existing (buffer-substring-no-properties beg end))
 
-                  (pass
-                   (overlay-get overlay 'rep-metadata-pass))
-                  (offset
-                   (overlay-get overlay 'rep-metadata-offset))
-                  (layer  (aref rep-change-metadata pass))
-                  (record (aref layer offset))
-                  (orig             (rep-get 'record 'orig))         ;; for messaging only
-                  (rep              (rep-get 'record 'rep))          ;; for messaging only
+                  (record (rep-record-from-overlay-and-metadata overlay))
+
+                  (orig             (rep-get 'record 'orig))  ;; for messaging only
+                  (rep              (rep-get 'record 'rep))
                   (shadowed_changes (rep-get 'record 'shadowed_changes))
                   )
 
              (rep-message (format "undo %s to %s\n" rep orig))
 
              (cond
+              ((not (string= existing rep))
+                 (message
+                  "Can't revert: \"%s\", looks like it was edited (expected \"%s\")."
+                  existing rep)
+               )
               ((setq shadow
                      (rep-overlay-shadowed-p overlay rep-property))
-               (let* ( ;; all just for messaging
-                      (s-pass
-                       (overlay-get shadow 'rep-metadata-pass))
-                      (s-offset
-                       (overlay-get shadow 'rep-metadata-offset))
-                      (s-layer   (aref rep-change-metadata s-pass))
-                      (s-record  (aref s-layer s-offset))
-                      (s-rep (rep-get 's-record 'rep))
+               (let* (
+                      (s-record (rep-record-from-overlay-and-metadata shadow))
+                      (s-rep (rep-get 's-record 'rep)) ;; for messaging only
                       )
                  (message
-                  "Can't revert fragment: %s. Must undo change of %s first."
+                  "Can't revert fragment: \"%s\". Must undo change of \"%s\" first."
                   existing s-rep)
                  ))
               (t
-               (let* ((restore-string
-                       (overlay-get overlay 'rep-previous-string))
-                      )
-                 (if rep-trace (rep-message (concat "restore-string: " (pp restore-string)))) ;; DEBUG
-
+               (let* ((restore-string orig
+                       ))
                  (delete-region beg end)
                  (goto-char beg)
                  (insert restore-string)
@@ -1292,7 +1269,7 @@ system, which operates completely independently."
                (delete-overlay overlay)
 
                (goto-char beg)
-               (message "Change reverted: %s" existing)
+               (message "Change reverted: \"%s\"" existing)
 
                ))))
           )))
@@ -1314,10 +1291,11 @@ keyed by the symbols: overlay, beg, end."
            (shadowlay-end (+ shadowlay-rel-end origin))
            )
       (move-overlay shadowlay shadowlay-beg shadowlay-end)
+      ;; (overlay-put shadowlay 'priority (overlay-get shadowlay 'rep-metadata-pass)) ;; didn't help
       )))
 
 ;;========
-;; local utility functions
+;; rep utility functions
 
 ;;--------
 ;; filename/directory manipulations
@@ -1440,21 +1418,71 @@ Unlike the built-in \\[message], this does not do an implicit format."
            ))))
 
 
+;;--------
+;; metadata manipulation utilities
+
+;; Used by rep-modified-what-was-changed-here
+(defun rep-metadata-get (field pass offset)
+  "Gets value of FIELD for PASS and OFFSET from `rep-change-metadata'.
+Example usage, get field \"orig\" for record in pass 3, with offset 4:
+   (rep-metadata-get 'orig 3 4)
+"
+  (let* ((layer   (aref rep-change-metadata pass))
+         (record  (aref layer offset))
+         (value   (rep-get 'record field)))
+    value))
+
+(defun rep-record-from-overlay-and-metadata (overlay)
+  "Returns a record of rep metadata, given a rep OVERLAY.
+The rep OVERLAY should have `rep-metadata-pass' and
+`rep-metadata-offset' properties. The returned record is an alist
+as documented here: `rep-change-metadata'."
+  (let* (
+         (pass
+          (overlay-get overlay 'rep-metadata-pass))
+         (offset
+          (overlay-get overlay 'rep-metadata-offset))
+         ;; TODO consider a check, before trying to look up record:
+         ;;           (cond ((and pass offset)
+         (layer   (aref rep-change-metadata pass))
+         (record  (aref layer offset))
+         )
+    record))
+
+
+
+
+
+
 ;;========
 ;; general utililities
 
 ;;--------
 ;; overlay utilities
 
-   ;; TODO move/copy overlay utilities to their own general-purpose package(s):
-   ;;   ol-ut.el or overlay-util.el
+   ;; TODO move overlay utilities to a general-purpose package:
+   ;;   overlay-utils.el
 
+;; TODO should I handle the case where the given
+;; property does not exist in the overlay?
+(defun rep-overlay-get (overlay property)
+  "Gets the value of the PROPERTY from the OVERLAY.
+Returns nil if either input is nil (will not error-out like
+\\[overlay-get]."
+  (cond  ((and overlay property)
+          (overlay-get overlay property)
+          )
+         (t
+          nil)
+         ))
+
+;; Used by *everything*
 (defun rep-overlays-here (&optional spot)
   "Return a list of overlays at one point in the buffer.
 If SPOT is not given, lists the overlays at point.  This is a
-variant of \\[overlays-in] and \\[overlays-at] that gathers both
-zero-width overlays and the wider ones at a location found by
-doing a \\[next-overlay-change]."
+variant of \\[overlays-in] and \\[overlays-at], designed to
+gather both zero-width overlays and the wider ones at a location
+found by doing a \\[next-overlay-change]."
   (interactive) ;; debug
   (let (
         (spot (or spot (point)))
@@ -1467,62 +1495,52 @@ doing a \\[next-overlay-change]."
         )
     o-list))
 
-;; TODO would be more convienient if this were a no-op when property is nil
-;; Used by: rep-next-overlay, rep-top-overlay-here
+;; used by rep-get-local-state, rep-get-local-state, rep-next-overlay
+;; and indirectly by everything: "apply", "undo", TAB, BACKTAB, "what", "modify"
 (defun rep-filter-overlays-by-property (overlay-list property)
   "Given an OVERLAY-LIST selects only the ones matching PROPERTY.
-Returns the filtered list."
-  (let ( overlay p hit-list )
-    (dolist (overlay overlay-list)
-      (setq p-list (overlay-properties overlay))
-      (dolist (p p-list)
-        (cond( (equal p property)
-               (push overlay hit-list)
-               ))
-        ))
-    hit-list))
+Returns the filtered list. If overlay-list is nil, returns nil.
+If property is nil, that means there's no filtering and it
+returns the given overlay-list unchanged."
+  (let ( overlay p hit-list ret)
+    (setq ret
+          (cond ((not property)
+                 overlay-list
+                 )
+                (t
+                (cond (overlay-list
+                 (dolist (overlay overlay-list)
+                   (setq p-list (overlay-properties overlay))
+                   (dolist (p p-list)
+                     (cond( (equal p property)
+                            (push overlay hit-list)
+                            ))
+                     ))
+                 hit-list)
+                (t
+                 nil)) ;; end cond overlay-list
+                )) ;; end cond not propery
+          );; end set ret
+    ret))
 
 ;; Used by: rep-next-overlay
 (defun rep-filter-overlays-priority (overlay-list priority)
   "Given an OVERLAY-LIST selects only the ones greater than PRIORITY.
-Returns the filtered list."
+Returns the filtered list. If either input is nil, returns nil."
   (let* ((cutoff priority)
-         overlay p hit-list prior)
-    (dolist (overlay overlay-list)
-        (cond( (>= (overlay-get overlay 'priority) cutoff)
-               (push overlay hit-list)
-               )))
-    hit-list))
+         overlay p hit-list prior ret)
+    (setq ret
+          (cond ((and overlay-list property)
+                 (dolist (overlay overlay-list)
+                   (cond( (>= (overlay-get overlay 'priority) cutoff)
+                          (push overlay hit-list)
+                          )))
+                 hit-list)
+                (t
+                 nil)))
+    ret))
 
-;; unused
-(defun rep-at-overlay-leading-edge-p (overlay &optional spot)
-  "Returns t if point is at the start of the given OVERLAY.
-If SPOT is given, checks that location rather than point.
-If OVERLAY is not actually an overlay, will return nil."
-;; Note: doesn't verify that overlay has not been removed
-;; in the meantime, correct?
-  (cond ((overlayp overlay)
-         (let* ((spot (or spot (point)))
-                (beg (overlay-start overlay))
-                )
-           (= spot beg)
-           )
-         (t
-          nil))))
 
-;; unused
-(defun rep-at-overlay-trailing-edge-p (overlay &optional spot)
-  "Returns t if point is at the start of the given OVERLAY.
-If SPOT is given, checks that location rather than point."
-;; TODO if not at an overlay at all, should also return nil, correct?
-;; TODO is there a misconception here? I think "trailing-edge"
-;; of overlay might be thought of as the location right after
-;; it's end.  Where does next-overlay-change leave you?
-  (let* ((spot (or spot (point)))
-         (end (overlay-end overlay))
-         )
-         (= spot end)
-         ))
 
 (defun rep-sort-overlays-on-priority (o-list)
   "Given a list of overlays, sort them on priority.
@@ -1545,12 +1563,27 @@ at the top."
                     ))))
     new-o-list))
 
-;; TODO improve efficiency (no need to sort all to get a maximum)
-;;      (used by many routines here)
-(defun rep-max-priority-overlay (o-list)
-  "Given a list of overlays, returns the one with maximum priority."
-  (car (rep-sort-overlays-on-priority o-list)))
-
+;; used by "next", "prev", and "rep-top-overlay-here" (used by "undo", "what")
+(defun rep-max-priority-overlay (overlay-list)
+  "Given an OVERLAY-LIST, returns an overlay with maximum priority.
+If input is nil, returns nil."
+  ;; The usual deal: sweep through the list, save the last one
+  ;; replace it with the current one if it's priority is larger.
+  (let* ( (candy-priority -27) ;; initialize to a lower number than is in use
+          overlay priority candidate ret
+          )
+    (cond (overlay-list
+           (dolist (overlay overlay-list)
+             (setq priority (overlay-get overlay 'priority))
+             (cond ((> priority candy-priority)
+                    (setq candidate overlay)
+                    (setq candy-priority priority)
+                    ))
+             )
+           (setq ret candidate))
+          (t
+           (setq ret nil)))
+    ret))
 
 ;; Directly used by:
 ;;          rep-next-top-overlay
@@ -1606,6 +1639,10 @@ the overlay."
            (goto-char save-point-a)))
   overlay))
 
+
+;; Unused (because BACKTAB uses rep-prev-top-overlay,
+;; which uses previous-overlay-change and rep-top-overlay-here)
+;; Note rep-next-overlay *is* used to apply changes and such.
 (defun rep-prev-overlay (&optional position property priority-cutoff goto-flag)
   "Looks for the leading edges of overlays before POSITION.
 POSITION defaults to point. Works in the current buffer.
@@ -1656,6 +1693,7 @@ the overlay."
   overlay))
 
 
+;; Used by rep-next-overlay
 (defun rep-next-raw-overlays (&optional position goto-flag)
   "Searches for any overlays after POSITION, which defaults to point.
 If GOTO-FLAG is set, it will move to the location.
@@ -1689,7 +1727,7 @@ at the same position\)."
       (goto-char save-point-b))
     raw-list))
 
-;; Used by: rep-prev-overlay
+;; Unused, because only referenced by another unused: rep-prev-overlay
 (defun rep-prev-raw-overlays (&optional position goto-flag)
   "Searches for any overlays before POSITION, which defaults to point.
 If GOTO-FLAG is set, it will move to the location.
@@ -1723,46 +1761,64 @@ at the same position\)."
       (goto-char save-point-b))
     raw-list))
 
+;; Used by "undo", "what" (and indirectly by "tab" and "backtab")
+;; specically, used by:
+;;   rep-prev-top-overlay
+;;   rep-next-top-overlay
+;;   rep-modified-undo-change-here
+;;   rep-modified-what-was-changed-here-verbose
+;;   rep-modified-what-was-changed-here
 
 (defun rep-top-overlay-here (&optional position property)
   "Returns the top overlay active at the given position, in the current buffer.
 A \"top\" overlay is \"unshadowed\", i.e. there is no overlapping
 overlay of higher priority.  If POSITION is not given, it looks
-at point, if PROPERTY is given, it looks for an overlay with that
-PROPERTY. Returns nil, if there's no such overlay."
+at point, if PROPERTY is given, it looks for the top most overlay
+with that PROPERTY. Returns nil, if there's no such overlay."
   (let* ((spot (or position (point)))
          (save-point-c (point))
-         next-overlay
-         next-overlay-beg
-         found
-         candidate
-         beg end priority
-          )
-    (setq candidate
-          (rep-max-priority-overlay
-           (rep-filter-overlays-by-property (rep-overlays-here spot) property)))
+         (overlays-list
+          (rep-filter-overlays-by-property (rep-overlays-here spot) property))
+         (candidate
+          (rep-max-priority-overlay overlays-list))
+         beg end priority top
+         )
     (cond (candidate
            (setq beg      (overlay-start candidate))
            (setq end      (overlay-end   candidate))
            (setq priority (overlay-get   candidate 'priority))
-           (setq next-higher-overlay
-                 (rep-next-overlay spot property (1+ priority)))
-           (cond (next-higher-overlay
-                  (setq next-higher-beg
-                        (overlay-start next-higher-overlay))
-                  (setq found (cond ((<= next-higher-beg end)
-                                     next-higher-overlay)
-                                    (t
-                                     candidate
-                                     )))
-                  )
-                 (t
-                  (setq found candidate)))
+           (setq top candidate) ;; top initialized as candidate, we set to nil if this fails
+
+           (goto-char beg) ;; sweep through extent of candidate overlay.
+           (while (and top ;; once we know it's not top, might as well stop
+                       (<= (point) end)  ;; check at every char up to end of overlay
+                       )
+             (let* (
+                    (raw-overlays-here (rep-overlays-here (point)))
+                    (overlays-here
+                     (rep-filter-overlays-by-property raw-overlays-here property) )
+                    current-priority max-overlay-here
+                    )
+               (setq current-priority ;; will be -1 if no overlays at all
+                     (cond ( overlays-here
+                             (setq max-overlay-here
+                                   (rep-max-priority-overlay overlays-here))
+                             (rep-overlay-get max-overlay-here 'priority)
+                             )
+                           (t -1)))
+               (cond ((> current-priority priority)
+                      (setq top nil) ;; no top overlay at this POSITION
+                      ))
+               )
+             (forward-char 1)
+             ))
+          (t
+           (setq top nil) ;; if candidate is undef, we want to return nil
            ))
     (goto-char save-point-c)
-    found))
+    top))
 
-;; used by: rep-modified-skip-to-next-change (aka "next" or TAB )
+;; used by: rep-modified-skip-to-next-change (aka "next" or TAB ) also "apply"
 (defun rep-next-top-overlay (&optional position property goto-flag)
   "Find immediately next top level overlay.
 Begins looking at point unless POSITION is given.
@@ -1774,22 +1830,19 @@ Returns the location found, or nil if none."
          (goto-flag t)
          candidate candidate-spot shadow found beg end priority shadow-beg
          )
-
     (while  ;; repeat-until
         (not
          (progn
            (setq spot (next-overlay-change spot))
-           (setq spot (rep-safe-sum spot +1)) ;; we go forward for "next": +
            ;; Note any "top overlay" is *unshadowed* by definition
-           (setq candidate
-                 (rep-top-overlay-here spot rep-property))
-           (cond (candidate
-                  (setq spot (overlay-start candidate))
-                  (setq found candidate)
-                  ))
+           (cond ( (setq found
+                         (rep-top-overlay-here spot rep-property))
+                   (setq spot (overlay-start found))
+                   )
+                 )
            (cond ((= spot (point-max))    ;; at EOB, so exit
                   t)
-                 (found                      ;; found something, so exit
+                 (found                   ;; found something, so exit
                   found)
                  )
            )))
@@ -1813,13 +1866,10 @@ Returns the location found, or nil if none."
         (not
          (progn
            (setq spot (previous-overlay-change spot))
-           (setq spot (rep-safe-sum spot -1))
            ;; Note any "top overlay" is *unshadowed* by definition
-           (setq candidate
-                 (rep-top-overlay-here spot rep-property))
-           (cond (candidate
-                  (setq spot (overlay-start candidate))
-                  (setq found candidate)
+           (cond ((setq found
+                         (rep-top-overlay-here spot rep-property))
+                  (setq spot (overlay-start found))
                   ))
            (cond ((= spot (point-min))    ;; at BOB, so exit
                   t)
@@ -1843,7 +1893,7 @@ Returns the shadowing overlay, if one is found, nil otherwise."
            (over-overlay (rep-next-overlay beg tag-property
                                            (1+ priority)
                                            nil))
-           ;;                                         ;; nil => goto-flag is off
+           ;; nil => goto-flag is off
            shadow dark-beg
            )
       (cond (over-overlay
@@ -1855,6 +1905,8 @@ Returns the shadowing overlay, if one is found, nil otherwise."
              (setq shadow over-overlay)))
       shadow
       )))
+
+
 
 ;;--------
 ;; alist manipulation utilities
@@ -1898,8 +1950,9 @@ Note: must quote alist name."
   )
 
 ;;--------
-;; buffer location coordinate utilities
+;; buffer location & string manipulation utilities
 
+;; used by rep-get-local-state
 (defun rep-safe-sum (here try-reach)
   "Starting from HERE, tries to add TRY-REACH, but does not exceed boundaries.
 If HERE plus TRY-REACH exceeds the min or max, returns the min or max,
@@ -1927,6 +1980,7 @@ code that will not error-out when near buffer boundaries."
 
 ;;--------
 ;; safe buffer substring
+;; currently un-used
 (defun rep-buffer-string-before (here &optional chunk-size)
   "Tries to get a substring before HERE of size CHUNK-SIZE \(default: 10\).
 If too close to the beginning of the buffer, returns as many characters
@@ -1935,7 +1989,6 @@ included in the substring.  HERE is taken as point when run
 interactively."
   (interactive "d")
   (let* ((chunk-size (or chunk-size 8))
-;;         (here (point))
          (min  (point-min))
          (there (- here chunk-size))
          string
@@ -1950,6 +2003,7 @@ interactively."
     string
     ))
 
+;; currently un-used
 (defun rep-buffer-string-after (here &optional chunk-size)
   "Tries to get a substring after HERE of size CHUNK-SIZE \(default: 10\).
 If too close to the end of the buffer, returns as many characters
@@ -1958,7 +2012,6 @@ included in the substring.  HERE is taken as point when run
 interactively."
   (interactive "d")
   (let* ((chunk-size (or chunk-size 8))
-;;         (here (point))
          (max  (point-max))
          (there (+ here chunk-size))
          string

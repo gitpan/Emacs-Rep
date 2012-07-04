@@ -9,9 +9,9 @@ build_requires:
   Test::Trap: 0
   lib: 0
 configure_requires:
-  Module::Build: 0.38
+  Module::Build: 0.4
 dynamic_config: 1
-generated_by: 'Module::Build version 0.38, CPAN::Meta::Converter version 2.113640'
+generated_by: 'Module::Build version 0.4, CPAN::Meta::Converter version 2.113640'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -20,7 +20,7 @@ name: Emacs-Rep
 provides:
   Emacs::Rep:
     file: lib/Emacs/Rep.pm
-    version: 0.08
+    version: 1.00
 requires:
   Carp: 0
   Data::Dumper: 0
@@ -30,4 +30,4 @@ requires:
   warnings: 0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.08
+version: 1.00
